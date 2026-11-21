@@ -2,11 +2,15 @@ name: Build Windows GUI App
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -75,6 +79,15 @@ jobs:
             }
           }
 
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive `
+            -Path "dist\YTDownloader" `
+            -DestinationPath "dist\YTDownloader-Portable-${{ steps.meta.outputs.version }}.zip" `
+            -Force
+
       - name: Build Windows installer with Inno Setup
         shell: pwsh
         run: |
@@ -99,8 +112,17 @@ jobs:
           name: YTDownloader-Windows-Installer
           path: dist/installer/*.exe
 
-      - name: Upload Windows Portable Build
+      - name: Upload Windows Portable Build (.zip)
         uses: actions/upload-artifact@v4
         with:
           name: YTDownloader-Windows-Portable
-          path: dist/YTDownloader/
+          path: dist/YTDownloader-Portable-*.zip
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/installer/*.exe
+            dist/YTDownloader-Portable-*.zip
