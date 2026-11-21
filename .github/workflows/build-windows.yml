@@ -16,6 +16,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Read APP_VERSION from config.py
+        id: meta
+        shell: pwsh
+        run: |
+          $version = python -c "import config; print(config.APP_VERSION)"
+          if (-not $version) { throw "Could not read APP_VERSION from config.py" }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Detected version: $version"
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -44,7 +53,6 @@ jobs:
           Get-ChildItem -Path "deno_tmp" -Recurse -Filter "deno.exe" |
             Copy-Item -Destination "bin" -Force
 
-          # Fail fast if any required binary is missing
           foreach ($tool in @("ffmpeg.exe", "ffprobe.exe", "deno.exe")) {
             if (-not (Test-Path "bin\$tool")) {
               throw "Missing required binary: bin\$tool"
@@ -54,7 +62,7 @@ jobs:
       - name: Build Windows app with PyInstaller
         run: pyinstaller --clean --noconfirm ytdownloader.spec
 
-      - name: Verify build output
+      - name: Verify PyInstaller output
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -67,8 +75,32 @@ jobs:
             }
           }
 
-      - name: Upload Windows build artifact
+      - name: Build Windows installer with Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
+          if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+
+          & $iscc "/DMyAppVersion=${{ steps.meta.outputs.version }}" installer.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload Windows Installer (.exe)
         uses: actions/upload-artifact@v4
         with:
-          name: YTDownloader-Windows
+          name: YTDownloader-Windows-Installer
+          path: dist/installer/*.exe
+
+      - name: Upload Windows Portable Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: YTDownloader-Windows-Portable
           path: dist/YTDownloader/
