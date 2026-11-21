@@ -8,6 +8,7 @@
 #define MyAppExeName "YTDownloader.exe"
 
 [Setup]
+LicenseFile=LICENSE
 ; Fixed GUID so future installer versions upgrade in place cleanly.
 AppId={{8F3B4A1E-9C2D-4E7A-B5D1-6A2F8C1E3B4D}
 AppName={#MyAppName}
@@ -39,7 +40,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; Package the entire PyInstaller --onedir output (YTDownloader.exe + _internal\).
-Source: "dist\YTDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\YTDownloader\*"; DestDir: "{app}";
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "THIRD_PARTY_LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion 
+Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

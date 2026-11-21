@@ -1,0 +1,36 @@
+YT Downloader — Third-Party Licenses & Notices
+==============================================
+
+YT Downloader itself is licensed under the GNU General Public License v3.0
+(see the accompanying LICENSE file).
+
+The Windows installer bundles the following third-party software:
+
+1. FFmpeg & FFprobe (BtbN Win64 GPL Static Builds)
+   - License: GNU General Public License v3.0 (GPLv3)
+   - Project: https://ffmpeg.org/
+   - Binary Builds: https://github.com/BtbN/FFmpeg-Builds
+   - Source Code: https://ffmpeg.org/download.html#repositories
+   - Build Scripts: https://github.com/BtbN/FFmpeg-Builds
+
+2. PySide6 (Qt for Python)
+   - License: GNU Lesser General Public License v3.0 (LGPLv3)
+   - Project: https://doc.qt.io/qtforpython-6/
+   - Source Code: https://code.qt.io/cgit/pyside/pyside-setup.git/
+
+3. yt-dlp
+   - License: The Unlicense (Public Domain)
+   - Project: https://github.com/yt-dlp/yt-dlp
+
+4. Deno
+   - License: MIT License
+   - Project: https://github.com/denoland/deno
+
+5. Rich (used in the terminal interface)
+   - License: MIT License
+   - Project: https://github.com/Textualize/rich
+
+6. Python
+   - License: Python Software Foundation License v2 (PSF-2.0)
+   - Project: https://www.python.org/
+   

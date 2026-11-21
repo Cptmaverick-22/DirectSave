@@ -532,4 +532,6 @@ Ideas, not promises:
 
 ## License
 
-No license has been specified yet. All rights reserved by the project author unless a license is added.
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)** — see the [LICENSE](LICENSE) file for details.
+
+The Windows installer bundles third-party software (FFmpeg, PySide6, yt-dlp, Deno, and Python). See [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) for their respective licenses and source links.
