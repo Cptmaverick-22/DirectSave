@@ -45,7 +45,7 @@ _configure_runtime()
 
 
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtGui import QDesktopServices, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -1460,19 +1460,25 @@ def main():
     setup_logging()
 
     if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "maverick.ytdownloader.gui"
-            )
-        except Exception:
-            pass
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "maverick.ytdownloader.gui"
+        )
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("yt-downloader")
 
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    icon_path = os.path.join(base_dir, "app.ico")
+    icon = QIcon(icon_path) if os.path.isfile(icon_path) else QIcon()
+
+    if not icon.isNull():
+        app.setWindowIcon(icon)
+
     window = MainWindow()
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     window.show()
 
     sys.exit(app.exec())

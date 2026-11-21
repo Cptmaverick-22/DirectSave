@@ -22,9 +22,10 @@ try:
 except Exception:
     pass
 
-# Use app.ico automatically if you add one to the project root later.
 icon_path = project_root / "app.ico"
 app_icon = str(icon_path) if icon_path.is_file() else None
+if icon_path.is_file():
+    datas.append((str(icon_path), "."))
 
 a = Analysis(
     ["gui.py"],
