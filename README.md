@@ -4,8 +4,8 @@ Download YouTube videos as MP4, audio as MP3 (or the original audio), and whole 
 
 It has two interfaces that share the same settings and download folder:
 
-- **Window app** (`gui.py`): paste a link, click a button.
-- **Terminal app** (`main.py`): a clean, menu-driven interface.
+- **Window app** (`gui.py`): paste a link, click a button. Available as a ready-to-run **Windows installer** (no Python or FFmpeg setup needed) or from source.
+- **Terminal app** (`main.py`): a clean, menu-driven interface (run from source).
 
 > Only download content that you own or have permission to download. See [Legal and responsible use](#legal-and-responsible-use).
 
@@ -55,6 +55,10 @@ It has two interfaces that share the same settings and download folder:
 
 ## Requirements
 
+If you use the **Windows installer**, Python, PySide6, yt-dlp, FFmpeg and Deno are all bundled—you only need an internet connection.
+
+For running **from source** (Linux, macOS, or Windows source installs):
+
 | Needs | Why |
 |---|---|
 | **Python 3.11 to 3.15** | yt-dlp needs 3.11 or newer, and PySide6 currently supports up to 3.15. 3.12 or 3.13 is a safe choice. |
@@ -65,15 +69,80 @@ It has two interfaces that share the same settings and download folder:
 
 | System | Status |
 |---|---|
-| Linux | Developed and tested on Fedora. |
-| Windows 10 and 11 | Written to work, **not tested yet**. |
-| macOS | Written to work, **not tested yet**. |
+| **Windows 10 and 11** | Tested. Ready-to-run installer available on [Releases](https://github.com/Cptmaverick-22/yt-downloader/releases). |
+| **Linux** | Developed and tested on Fedora (run from source). |
+| **macOS** | Written to work, **not tested yet** (run from source). |
 
 Desktop notifications work on Linux only (they need `notify-send`, which most desktops include).
 
 ## Installation
 
 Pick your system. Every section ends with a working app.
+
+### Windows
+
+#### Option 1: Windows Installer (Recommended)
+
+No Python, FFmpeg or Deno installation required—everything is bundled inside the app.
+
+1. Open the [Releases](https://github.com/Cptmaverick-22/yt-downloader/releases) page and download the latest **`YTDownloader-Setup-<version>.exe`**.
+2. Double-click the installer to run it.
+   - Because the app is not code-signed, Windows SmartScreen may show **"Windows protected your PC"**. Click **More info → Run anyway** to continue.
+3. Follow the setup wizard (tick **Create a desktop shortcut** if you want one).
+   - Installs per-user into `%LOCALAPPDATA%\Programs\YTDownloader`—no administrator password or UAC prompt is required.
+4. Launch **YT Downloader** from the Start Menu or Desktop shortcut.
+
+To uninstall later, remove **YT Downloader** from **Windows Settings → Apps → Installed apps**. Your downloaded videos and settings in `%APPDATA%\yt-downloader\` are kept intact.
+
+#### Option 2: Run from source (Windows)
+
+Use this option if you want to run the terminal app (`main.py`) or develop on Windows. Use **Windows Terminal** (the default on Windows 11)—the old `cmd.exe` window can show garbled symbols in the terminal app.
+
+**1. Install Python 3.11 to 3.15** from [python.org](https://www.python.org/downloads/). In the installer, tick **"Add python.exe to PATH"**.
+
+**2. Install FFmpeg and Deno.** Open PowerShell and run:
+
+```powershell
+winget install Gyan.FFmpeg
+winget install DenoLand.Deno
+```
+
+Close and reopen the terminal, then check:
+
+```powershell
+python --version
+ffmpeg -version
+deno --version
+```
+
+**3. Get the project**
+
+```powershell
+git clone https://github.com/Cptmaverick-22/yt-downloader.git
+cd yt-downloader
+```
+
+No git? Download the ZIP from the GitHub page, extract it, and open PowerShell in that folder.
+
+**4. Create a virtual environment and install the packages**
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+If PowerShell refuses to run the activation script, run this once and try again:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+**5. Start the app**
+
+```powershell
+python gui.py
+```
 
 ### Linux
 
@@ -149,56 +218,6 @@ pip install -r requirements.txt
 python gui.py
 ```
 
-### Windows
-
-Use **Windows Terminal** (the default on Windows 11). The old `cmd.exe` window can show garbled symbols in the terminal app.
-
-**1. Install Python 3.11 to 3.15** from [python.org](https://www.python.org/downloads/). In the installer, tick **"Add python.exe to PATH"**.
-
-**2. Install FFmpeg and Deno.** Open PowerShell and run:
-
-```powershell
-winget install Gyan.FFmpeg
-winget install DenoLand.Deno
-```
-
-Close and reopen the terminal, then check:
-
-```powershell
-python --version
-ffmpeg -version
-deno --version
-```
-
-**3. Get the project**
-
-```powershell
-git clone https://github.com/Cptmaverick-22/yt-downloader.git
-cd yt-downloader
-```
-
-No git? Download the ZIP from the GitHub page, extract it, and open PowerShell in that folder.
-
-**4. Create a virtual environment and install the packages**
-
-```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-If PowerShell refuses to run the activation script, run this once and try again:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-**5. Start the app**
-
-```powershell
-python gui.py
-```
-
 ### macOS
 
 ```bash
@@ -213,9 +232,10 @@ python gui.py
 
 ## Running the app
 
-Open a terminal in the project folder and activate the virtual environment first:
+- **Windows installer:** Open **YT Downloader** from the Start Menu or Desktop shortcut.
+- **From source (Linux, macOS, or Windows):** Open a terminal in the project folder and activate the virtual environment first:
 
-| | Linux and macOS | Windows |
+| | Linux and macOS | Windows (from source) |
 |---|---|---|
 | Activate | `source .venv/bin/activate` | `.venv\Scripts\Activate.ps1` |
 | Window app | `python gui.py` | `python gui.py` |
@@ -304,24 +324,24 @@ Live streams and upcoming premieres can't be downloaded. Private, age-restricted
 
 YouTube changes often, and an outdated yt-dlp is the most common reason downloads suddenly fail.
 
-**In the app:** click **Update yt-dlp** in the window, or choose option **5** in the terminal app. It shows your version and the newest one and installs only if you agree. The new version is used **after a restart** (the window offers to restart for you).
+**In the app:** click **Update yt-dlp** in the window (works in both the Windows installer and source builds), or choose option **5** in the terminal app. It shows your version and the newest one and installs only if you agree. The new version is used **after a restart** (the window offers to restart for you).
 
 How it works:
 
 - The new yt-dlp (and the small helper it needs) is downloaded from PyPI into the app's settings folder. The files are checked against PyPI's checksums, tested with your Python, and only then installed.
-- It is loaded ahead of the installed copy. If it ever fails to load, it is deleted and the installed copy is used, so a bad update can't break the app.
-- If you later update yt-dlp with pip to a version that is at least as new, the downloaded copy is removed automatically.
-- To go back to the installed version, open the update screen again and choose **"Use the built-in version"** (window) or answer **y** to "Go back to the yt-dlp that came with the app?" (terminal).
+- It is loaded ahead of the bundled or installed copy. If it ever fails to load, it is deleted and the built-in copy is used, so a bad update can't break the app.
+- If you later upgrade the Windows app (or update yt-dlp with pip) to a version that is at least as new, the downloaded copy is removed automatically.
+- To go back to the built-in version, open the update screen again and choose **"Use the built-in version"** (window) or answer **y** to "Go back to the yt-dlp that came with the app?" (terminal).
 
 **Daily check:** once a day the app asks PyPI whether a newer yt-dlp exists, and only shows a notice. It never installs anything by itself. You can turn the check off with the checkbox in the window's update dialog, with the question in the terminal's update screen, or by setting `"check_updates": false` in `settings.json`.
 
-**With pip:** inside your virtual environment, run `pip install -U "yt-dlp[default]"`.
+**With pip (from source):** inside your virtual environment, run `pip install -U "yt-dlp[default]"`.
 
 ## Where files and settings are stored
 
 **Downloads** go to a folder called **YT Downloader** inside your Downloads folder (on Linux the app follows your desktop's Downloads folder, even if it is translated). Change it any time. Playlists get a subfolder.
 
-**Settings, log and updates** live in a per-user folder, so they survive reinstalling the app:
+**Settings, log and updates** live in a per-user folder, so they survive reinstalling or upgrading the app:
 
 | System | Folder |
 |---|---|
@@ -396,7 +416,9 @@ Other rules:
 
 ## Troubleshooting
 
-**The window doesn't open: "Could not load the Qt platform plugin".** A system library is missing.
+**Windows SmartScreen says "Windows protected your PC".** Because the Windows installer is not signed with a paid code-signing certificate, Windows warns on first run. Click **More info → Run anyway**.
+
+**The window doesn't open on Linux: "Could not load the Qt platform plugin".** A system library is missing.
 
 ```bash
 # Fedora
@@ -408,7 +430,7 @@ sudo apt install libxcb-cursor0
 
 **Lines starting with `qt.qpa.wayland` or "Could not register app ID" appear in the terminal.** These are harmless desktop-integration messages from Wayland. The app works normally.
 
-**FFmpeg or Deno not found.** Check `ffmpeg -version` and `deno --version`. On Linux and macOS make sure `~/.deno/bin` is on your PATH. On Windows, close and reopen the terminal after installing so the PATH updates.
+**FFmpeg or Deno not found (from source).** Check `ffmpeg -version` and `deno --version`. On Linux and macOS make sure `~/.deno/bin` is on your PATH. On Windows, close and reopen the terminal after installing so the PATH updates. (The Windows installer bundles both tools automatically.)
 
 **Downloads suddenly fail, or formats are missing.** Update yt-dlp (see [Updating yt-dlp](#updating-yt-dlp)). This fixes most sudden failures.
 
@@ -436,7 +458,7 @@ sudo apt install libxcb-cursor0
 
 ## Reporting a problem
 
-1. In the window, press **Copy diagnostics** (it appears after an error), or run `python main.py --diagnostics`.
+1. In the window, press **Copy diagnostics** (it appears after an error), or run `python main.py --diagnostics` from source.
 2. The report lists the app, Python, yt-dlp, FFmpeg and Deno versions, which yt-dlp copy is in use, and the end of the log.
 3. Check the "Recent log" part for anything private, then paste the report into your bug report together with what you did and what you expected.
 
@@ -444,13 +466,17 @@ sudo apt install libxcb-cursor0
 
 ```text
 yt-downloader/
-├── gui.py             # Window app (Qt)
-├── main.py            # Terminal app (Rich)
-├── downloader.py      # Core logic: fetching, downloading, playlists
-├── updater.py         # In-app yt-dlp updates (standard library only)
-├── config.py          # Constants and settings
-├── logs.py            # Log file and diagnostics report
-├── desktop.py         # Notifications and opening folders
+├── gui.py                                # Window app (Qt)
+├── main.py                               # Terminal app (Rich)
+├── downloader.py                         # Core logic: fetching, downloading, playlists
+├── updater.py                            # In-app yt-dlp updates (standard library only)
+├── config.py                             # Constants and settings
+├── logs.py                               # Log file and diagnostics report
+├── desktop.py                            # Notifications and opening folders
+├── app.ico                               # Application icon (Windows exe, installer, GUI)
+├── ytdownloader.spec                     # PyInstaller build configuration
+├── installer.iss                         # Inno Setup Windows installer script
+├── .github/workflows/build-windows.yml   # Automated Windows build & GitHub Release workflow
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── README.md
@@ -461,8 +487,9 @@ yt-downloader/
 |---|---|
 | `downloader.py` | The core. It never prints or asks questions: interfaces pass in a `Reporter` to receive progress and a cancel event to stop a download. |
 | `gui.py` and `main.py` | Thin interfaces over the same core, so a change to downloading lands in both. |
-| `updater.py` | Downloads yt-dlp from PyPI and loads it first. It must not import yt-dlp itself. |
+| `updater.py` | Downloads yt-dlp from PyPI and loads it first (including ahead of PyInstaller's frozen importer). It must not import yt-dlp itself. |
 | `config.py` | Version, quality lists, and loading and saving the settings file. |
+| `ytdownloader.spec` & `installer.iss` | Package `gui.py`, FFmpeg, FFprobe, and Deno into a standalone Windows app and Inno Setup installer. |
 
 One rule matters: **`updater.activate()` must run before anything imports yt-dlp.** Both `gui.py` and `main.py` do this at the very top. Keep it first when you add an entry point.
 
@@ -476,6 +503,17 @@ python -m pyflakes *.py
 
 The tests need no network access. `tests/test_names.py` runs pyflakes automatically and is skipped when pyflakes isn't installed. The window itself isn't covered by tests, so run pyflakes after editing `gui.py`.
 
+**Publishing a Windows release**
+
+Update `APP_VERSION` in `config.py`, commit and push to `main`, then push a matching version tag:
+
+```bash
+git tag v1.2
+git push origin v1.2
+```
+
+GitHub Actions automatically builds `YTDownloader-Setup-<version>.exe` and publishes it to the repository's **Releases** page.
+
 ## Legal and responsible use
 
 This application is intended for downloading content that you own, have permission to download, or are otherwise legally authorized to download.
@@ -486,7 +524,7 @@ Respect copyright laws, YouTube's Terms of Service and the rights of content cre
 
 Ideas, not promises:
 
-- Ready-to-run packages (a Linux archive and AppImage, a Windows installer) with FFmpeg and Deno included, and a single launcher command
+- Ready-to-run Linux packages (an archive and AppImage) with FFmpeg and Deno included, and a single launcher command
 - Faster playlists by preparing the next video while one downloads
 - Subtitles, and downloading a clip by start and end time
 - An option for WebM or MKV to offer more formats above 1080p
