@@ -1,53 +1,40 @@
-# Python virtual environment
-.venv/
-venv/
-
-# Python cache files
+# Python bytecode & caches
 __pycache__/
 *.py[cod]
+*$py.class
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
 
-# Application settings (machine-specific)
-settings.json
-settings.json.backup
-settings.tmp
+# Virtual environments
+.venv/
+venv/
+env/
 
-# Downloaded media
-downloads/
-
-# Incomplete download files
-*.part
-*.ytdl
-
-# Temporary files
-*.tmp
-*.bak
-
-# Test and coverage files
+# Testing
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Build files
+# PyInstaller & Inno Setup build outputs (keep ytdownloader.spec, installer.iss, app.ico)
 build/
 dist/
-*.egg-info/
+Output/
+bin/
+ffmpeg.zip
+deno.zip
+ffmpeg_tmp/
+deno_tmp/
+*.exe
+*.msi
 
-# IDE and editor files
+# Local runtime data & logs
+downloads/
+*.log
+
+# Editors & OS clutter
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# Operating system files
 .DS_Store
 Thumbs.db
-
-# Private or generated files
-Diagnostics.txt
-*.log
-vendor/
-installer_output/
-
-build/
-dist/
-bin/
+desktop.ini
