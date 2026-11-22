@@ -360,7 +360,8 @@ How it works:
     "download_dir": "/home/you/Videos/YouTube",
     "video_quality": 1080,
     "audio_bitrate": "original",
-    "check_updates": true
+    "check_updates": true,
+    "theme":"dark"
 }
 ```
 
@@ -468,6 +469,7 @@ sudo apt install libxcb-cursor0
 yt-downloader/
 ├── gui.py                                # Window app (Qt)
 ├── main.py                               # Terminal app (Rich)
+├── Themes.py                             # Dark and Light Qt themes
 ├── downloader.py                         # Core logic: fetching, downloading, playlists
 ├── updater.py                            # In-app yt-dlp updates (standard library only)
 ├── config.py                             # Constants and settings
