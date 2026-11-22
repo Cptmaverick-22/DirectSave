@@ -637,6 +637,7 @@ def _extract_wheel(path, target):
         with zipfile.ZipFile(path) as bundle:
             for member in bundle.infolist():
                 name = member.filename
+                raw_name = getattr(member, "orig_filename", name)
 
                 if member.is_dir():
                     continue
@@ -644,7 +645,8 @@ def _extract_wheel(path, target):
                 posix = PurePosixPath(name)
 
                 if (
-                    "\\" in name
+                    "\\" in raw_name
+                    or "\\" in name
                     or posix.is_absolute()
                     or ".." in posix.parts
                     or any(":" in part for part in posix.parts)

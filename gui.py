@@ -1,9 +1,9 @@
 """YT Downloader - graphical interface (Qt)."""
 
-import subprocess
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -41,11 +41,19 @@ def _configure_runtime():
 
             subprocess.Popen = _SilentPopen
 
+
 _configure_runtime()
 
 
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap, QIcon
+from PySide6.QtGui import (
+    QAction,
+    QDesktopServices,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -58,18 +66,20 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QProgressDialog,
     QPushButton,
-    QRadioButton,
+    QStyle,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
 import updater
 
-updater.activate()   # Must run before anything imports yt-dlp.
+updater.activate()  # Must run before anything imports yt-dlp.
 
 from updater import UpdateError
 
@@ -106,21 +116,17 @@ from downloader import (
 )
 
 from logs import diagnostics_text, setup_logging
-
-
-STATUS_COLORS = {
-    "error": "#d9534f",
-    "warning": "#e0a030",
-    "success": "#3c9d4e",
-}
+from themes import THEME_STATUS_COLORS, apply_theme, get_saved_theme
 
 THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024
 CLOSE_WAIT_MS = 30000
+LABEL_COL_WIDTH = 88
 
 
 # --------------------------------------------------------------------------
 # Background work
 # --------------------------------------------------------------------------
+
 
 class TaskThread(QThread):
     """Runs a function off the window thread and reports back via signals."""
@@ -154,8 +160,13 @@ class TaskThread(QThread):
         """Stop delivering results to the window (used while closing)."""
 
         for signal in (
-            self.done, self.failed, self.message, self.stage,
-            self.progress, self.progress_done, self.playlist_item,
+            self.done,
+            self.failed,
+            self.message,
+            self.stage,
+            self.progress,
+            self.progress_done,
+            self.playlist_item,
         ):
             try:
                 signal.disconnect()
@@ -193,6 +204,7 @@ class QtReporter(Reporter):
         self.last_progress = 0.0
         self.thread.progress_done.emit()
 
+
 class UpdateNotice(QObject):
     """Looks for a newer yt-dlp in the background and reports what it finds.
 
@@ -211,7 +223,7 @@ class UpdateNotice(QObject):
             try:
                 self.found.emit(version)
             except RuntimeError:
-                pass   # The window was closed in the meantime.
+                pass  # The window was closed in the meantime.
 
 
 def load_thumbnail(url):
@@ -227,9 +239,7 @@ def load_thumbnail(url):
         if parsed.scheme != "https" or not parsed.hostname:
             return None
 
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0"}
-        )
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
         with urllib.request.urlopen(request, timeout=10) as response:
             # Check the final address after redirects.
@@ -293,33 +303,72 @@ def fetch_everything(url, prefer_playlist=False):
 
 
 # --------------------------------------------------------------------------
-# Small helpers
+# Small UI helpers
 # --------------------------------------------------------------------------
 
-def plain_label(text="", bold=False, wrap=True):
+
+def plain_label(text="", bold=False, muted=False, wrap=True):
     label = QLabel(text)
     label.setTextFormat(Qt.TextFormat.PlainText)
     label.setWordWrap(wrap)
 
     if bold:
-        label.setStyleSheet("font-weight: bold;")
+        label.setStyleSheet("font-weight: 600;")
+    if muted:
+        label.setProperty("muted", True)
 
     return label
+
+
+def form_label(text):
+    """Fixed-width left label so every form input aligns vertically."""
+    label = QLabel(text)
+    label.setProperty("formLabel", True)
+    label.setFixedWidth(LABEL_COL_WIDTH)
+    return label
+
+
+def horizontal_divider():
+    line = QFrame()
+    line.setProperty("divider", True)
+    line.setFixedHeight(1)
+    return line
+
+
+def rounded_pixmap(pixmap, radius=8):
+    """Return a copy of pixmap clipped to smooth rounded corners."""
+
+    result = QPixmap(pixmap.size())
+    result.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(0, 0, pixmap.width(), pixmap.height(), radius, radius)
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+
+    return result
 
 
 # --------------------------------------------------------------------------
 # Main window
 # --------------------------------------------------------------------------
 
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setMinimumWidth(600)
+        self.setMinimumWidth(680)
 
-        self.state = "idle"      # idle, fetching, ready, downloading, done
-        self.mode = "video"      # "video" or "playlist"
+        self.current_theme = get_saved_theme(QApplication.instance())
+        self._status_level = "info"
+
+        self.state = "idle"  # idle, fetching, ready, downloading, done
+        self.mode = "video"  # "video" or "playlist"
         self.task = None
         self.cancel_event = None
         self.url = ""
@@ -332,9 +381,13 @@ class MainWindow(QWidget):
         self.download_kind = "video"
         self.download_setting = None
         self._syncing_checks = False
+        self.tray_icon = None
 
         self.build_ui()
+        self.setup_tray()
         self.set_state("idle")
+        self.url_input.setFocus()
+
         self.update_notice = UpdateNotice(self)
         self.update_notice.found.connect(self.on_update_available)
         self.update_notice.start()
@@ -346,47 +399,171 @@ class MainWindow(QWidget):
                 "warning",
             )
 
+    # ----- theme ----------------------------------------------------------
+
+    def apply_current_theme(self, save=True):
+        apply_theme(QApplication.instance(), self.current_theme, window=self, save=save)
+        if self.current_theme == "dark":
+            self.theme_btn.setText("☀ Light")
+            self.theme_btn.setToolTip("Switch to Light theme")
+        else:
+            self.theme_btn.setText("🌙 Dark")
+            self.theme_btn.setToolTip("Switch to Dark theme")
+
+        if self.status_label.text():
+            self.show_status(self.status_label.text(), self._status_level)
+
+    def toggle_theme(self):
+        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+        self.apply_current_theme(save=True)
+
+    # ----- desktop notifications ------------------------------------------
+
+    def setup_tray(self):
+        """Set up a system tray icon for Windows/macOS toast notifications.
+
+        On Linux (such as Fedora Workstation / GNOME), native notify-send is
+        used directly so no unnecessary tray icon is created.
+        """
+        if sys.platform.startswith("linux") and shutil.which("notify-send"):
+            return
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        icon = QApplication.instance().windowIcon()
+        if icon.isNull():
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip(APP_NAME)
+
+        menu = QMenu(self)
+        show_action = QAction(f"Show {APP_NAME}", self)
+        show_action.triggered.connect(self.bring_to_front)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.close)
+        menu.addAction(show_action)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.messageClicked.connect(self._on_notification_clicked)
+        tray.show()
+        self.tray_icon = tray
+
+    def bring_to_front(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.bring_to_front()
+
+    def _on_notification_clicked(self):
+        if self.last_folder is not None:
+            self.open_folder()
+        else:
+            self.bring_to_front()
+
+    def send_notification(self, title, message):
+        """Show a native desktop notification on Linux, Windows, and macOS."""
+        text = str(message)
+        if len(text) > 200:
+            text = text[:199] + "…"
+
+        if self.tray_icon is not None:
+            self.tray_icon.showMessage(
+                title,
+                text,
+                self.tray_icon.icon(),
+                5000,
+            )
+        else:
+            # Run notify-send off the GUI thread so Fedora/GNOME stays snappy.
+            threading.Thread(target=notify, args=(title, text), daemon=True).start()
+
     # ----- layout ---------------------------------------------------------
 
     def build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # 1. Top header bar (brand left, utility actions right)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
 
         heading = QLabel(APP_NAME)
-        heading.setStyleSheet("font-size: 20px; font-weight: bold;")
-        layout.addWidget(heading)
+        heading.setProperty("heading", True)
 
-        # URL row
-        url_row = QHBoxLayout()
+        version_badge = QLabel(f"v{APP_VERSION}")
+        version_badge.setProperty("badge", True)
+
+        self.update_button = QPushButton("Update yt-dlp")
+        self.update_button.setProperty("role", "ghost")
+        self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_button.setToolTip(
+            "Download the newest yt-dlp. This fixes most sudden " "download failures."
+        )
+        self.update_button.clicked.connect(self.update_ytdlp)
+
+        self.theme_btn = QPushButton()
+        self.theme_btn.setProperty("role", "ghost")
+        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_btn.clicked.connect(self.toggle_theme)
+
+        header_row.addWidget(heading)
+        header_row.addWidget(version_badge)
+        header_row.addStretch(1)
+        header_row.addWidget(self.update_button)
+        header_row.addWidget(self.theme_btn)
+        layout.addLayout(header_row)
+
+        # 2. URL input card
+        url_card = QFrame()
+        url_card.setProperty("card", True)
+        url_layout = QHBoxLayout(url_card)
+        url_layout.setContentsMargins(12, 12, 12, 12)
+        url_layout.setSpacing(10)
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(
-            "Paste a YouTube video or playlist link here"
+            "Paste a YouTube video or playlist link here…"
         )
+        self.url_input.setFixedHeight(40)
         self.url_input.setClearButtonEnabled(True)
         self.url_input.returnPressed.connect(self.fetch)
         self.url_input.textEdited.connect(self.on_url_edited)
 
         self.fetch_button = QPushButton("Fetch")
+        self.fetch_button.setProperty("role", "primary")
+        self.fetch_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fetch_button.setFixedHeight(40)
+        self.fetch_button.setMinimumWidth(104)
         self.fetch_button.clicked.connect(self.fetch)
 
-        url_row.addWidget(self.url_input, 1)
-        url_row.addWidget(self.fetch_button)
-        layout.addLayout(url_row)
+        url_layout.addWidget(self.url_input, 1)
+        url_layout.addWidget(self.fetch_button)
+        layout.addWidget(url_card)
 
-        # Video / playlist card
+        # 3. Video / playlist preview card
         self.card = QFrame()
-        self.card.setFrameShape(QFrame.Shape.StyledPanel)
+        self.card.setProperty("card", True)
         card_layout = QHBoxLayout(self.card)
+        card_layout.setContentsMargins(16, 16, 16, 16)
+        card_layout.setSpacing(16)
 
         self.thumb = QLabel()
         self.thumb.setFixedSize(192, 108)
         self.thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         text_column = QVBoxLayout()
-        self.title_label = plain_label(bold=True)
-        self.meta_label = plain_label()
+        text_column.setSpacing(6)
+        self.title_label = plain_label()
+        self.title_label.setProperty("cardTitle", True)
+        self.meta_label = plain_label(muted=True)
         text_column.addWidget(self.title_label)
         text_column.addWidget(self.meta_label)
         text_column.addStretch(1)
@@ -395,54 +572,82 @@ class MainWindow(QWidget):
         card_layout.addLayout(text_column, 1)
         layout.addWidget(self.card)
 
-        # Format, quality, and playlist-specific options
-        self.options = QWidget()
+        # 4. Format, quality, and playlist options card
+        self.options = QFrame()
+        self.options.setProperty("card", True)
         options_layout = QVBoxLayout(self.options)
-        options_layout.setContentsMargins(0, 0, 0, 0)
-        options_layout.setSpacing(10)
+        options_layout.setContentsMargins(16, 16, 16, 16)
+        options_layout.setSpacing(12)
 
-        kind_row = QHBoxLayout()
-        self.video_radio = QRadioButton("Video (MP4)")
-        self.audio_radio = QRadioButton("Audio")
+        # Segmented Video / Audio switcher
+        segment_frame = QFrame()
+        segment_frame.setProperty("segmentContainer", True)
+        segment_layout = QHBoxLayout(segment_frame)
+        segment_layout.setContentsMargins(4, 4, 4, 4)
+        segment_layout.setSpacing(4)
+
+        self.video_radio = QPushButton("Video (MP4)")
+        self.video_radio.setCheckable(True)
         self.video_radio.setChecked(True)
+        self.video_radio.setProperty("segment", True)
+        self.video_radio.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.audio_radio = QPushButton("Audio (MP3 / Original)")
+        self.audio_radio.setCheckable(True)
+        self.audio_radio.setProperty("segment", True)
+        self.audio_radio.setCursor(Qt.CursorShape.PointingHandCursor)
 
         group = QButtonGroup(self)
+        group.setExclusive(True)
         group.addButton(self.video_radio)
         group.addButton(self.audio_radio)
         self.video_radio.toggled.connect(self.populate_quality)
 
-        kind_row.addWidget(self.video_radio)
-        kind_row.addWidget(self.audio_radio)
-        kind_row.addStretch(1)
-        options_layout.addLayout(kind_row)
+        segment_layout.addWidget(self.video_radio, 1)
+        segment_layout.addWidget(self.audio_radio, 1)
+        options_layout.addWidget(segment_frame)
 
+        # Quality row
         quality_row = QHBoxLayout()
-        self.quality_label = QLabel("Quality")
+        quality_row.setSpacing(12)
+        self.quality_label = form_label("Quality")
         self.quality_box = QComboBox()
+        self.quality_box.setFixedHeight(38)
         quality_row.addWidget(self.quality_label)
         quality_row.addWidget(self.quality_box, 1)
         options_layout.addLayout(quality_row)
 
         # Playlist-only options
         self.playlist_options = QWidget()
+        self.playlist_options.setStyleSheet("background-color: transparent;")
         playlist_layout = QVBoxLayout(self.playlist_options)
-        playlist_layout.setContentsMargins(0, 0, 0, 0)
+        playlist_layout.setContentsMargins(0, 4, 0, 0)
         playlist_layout.setSpacing(10)
 
+        playlist_layout.addWidget(horizontal_divider())
+
         range_row = QHBoxLayout()
-        range_row.addWidget(QLabel("Range"))
+        range_row.setSpacing(10)
+        range_row.addWidget(form_label("Range"))
 
         self.range_input = QLineEdit()
+        self.range_input.setFixedHeight(36)
         self.range_input.setClearButtonEnabled(True)
         self.range_input.textEdited.connect(self.on_range_edited)
 
         self.select_all_button = QPushButton("All")
+        self.select_all_button.setFixedHeight(36)
+        self.select_all_button.setMinimumWidth(58)
+        self.select_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.select_all_button.setToolTip(
             "Check all videos (or all shown videos when filtered)"
         )
         self.select_all_button.clicked.connect(self.select_all_videos)
 
         self.select_none_button = QPushButton("None")
+        self.select_none_button.setFixedHeight(36)
+        self.select_none_button.setMinimumWidth(64)
+        self.select_none_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.select_none_button.setToolTip(
             "Uncheck all videos (or all shown videos when filtered)"
         )
@@ -454,9 +659,11 @@ class MainWindow(QWidget):
         playlist_layout.addLayout(range_row)
 
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Videos"))
+        filter_row.setSpacing(10)
+        filter_row.addWidget(form_label("Filter"))
 
         self.search_input = QLineEdit()
+        self.search_input.setFixedHeight(36)
         self.search_input.setPlaceholderText("Filter videos by title…")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self.on_search_changed)
@@ -464,7 +671,8 @@ class MainWindow(QWidget):
         filter_row.addWidget(self.search_input, 1)
         playlist_layout.addLayout(filter_row)
 
-        self.selection_count_label = plain_label()
+        self.selection_count_label = plain_label(muted=True)
+        self.selection_count_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         playlist_layout.addWidget(self.selection_count_label)
 
         self.playlist_list = QListWidget()
@@ -473,8 +681,10 @@ class MainWindow(QWidget):
         playlist_layout.addWidget(self.playlist_list)
 
         subfolder_row = QHBoxLayout()
-        subfolder_row.addWidget(QLabel("Subfolder"))
+        subfolder_row.setSpacing(10)
+        subfolder_row.addWidget(form_label("Subfolder"))
         self.subfolder_input = QLineEdit()
+        self.subfolder_input.setFixedHeight(36)
         self.subfolder_input.setClearButtonEnabled(True)
         subfolder_row.addWidget(self.subfolder_input, 1)
         playlist_layout.addLayout(subfolder_row)
@@ -482,71 +692,81 @@ class MainWindow(QWidget):
         options_layout.addWidget(self.playlist_options)
         layout.addWidget(self.options)
 
-        # Folder row (always visible)
-        folder_row = QHBoxLayout()
-        folder_row.addWidget(QLabel("Save to"))
-        self.folder_label = plain_label(str(get_download_dir()))
+        # 5. Save location card (always visible)
+        folder_card = QFrame()
+        folder_card.setProperty("card", True)
+        folder_row = QHBoxLayout(folder_card)
+        folder_row.setContentsMargins(16, 12, 16, 12)
+        folder_row.setSpacing(12)
+
+        self.folder_label = plain_label(str(get_download_dir()), muted=True)
         self.folder_button = QPushButton("Change…")
+        self.folder_button.setFixedHeight(34)
+        self.folder_button.setMinimumWidth(92)
+        self.folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.folder_button.clicked.connect(self.choose_folder)
+
+        folder_row.addWidget(form_label("Save to"))
         folder_row.addWidget(self.folder_label, 1)
         folder_row.addWidget(self.folder_button)
-        layout.addLayout(folder_row)
+        layout.addWidget(folder_card)
 
-        # Buttons
-        button_row = QHBoxLayout()
-
+        # 6. Full-width primary Download CTA
         self.download_button = QPushButton("Download")
-        self.download_button.setStyleSheet(
-            "padding: 8px 24px; font-weight: bold;"
-        )
+        self.download_button.setProperty("role", "cta")
+        self.download_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.download_button.setFixedHeight(44)
         self.download_button.clicked.connect(self.start_download)
+        layout.addWidget(self.download_button)
 
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.cancel_download)
-
-        self.open_button = QPushButton("Open folder")
-        self.open_button.clicked.connect(self.open_folder)
-
-        self.failures_button = QPushButton("View failed")
-        self.failures_button.clicked.connect(self.show_failures)
-
-        button_row.addWidget(self.download_button)
-        button_row.addWidget(self.cancel_button)
-        button_row.addWidget(self.open_button)
-        button_row.addWidget(self.failures_button)
-        self.update_button = QPushButton("Update yt-dlp")
-        self.update_button.setToolTip(
-            "Download the newest yt-dlp. This fixes most sudden "
-            "download failures."
-        )
-        self.update_button.clicked.connect(self.update_ytdlp)
-        button_row.addWidget(self.update_button)
-        button_row.addStretch(1)
-        layout.addLayout(button_row)
-
-        # Progress
-        self.progress_box = QWidget()
+        # 7. Progress card (visible while fetching or downloading)
+        self.progress_box = QFrame()
+        self.progress_box.setProperty("card", True)
         progress_layout = QVBoxLayout(self.progress_box)
-        progress_layout.setContentsMargins(0, 0, 0, 0)
-        progress_layout.setSpacing(4)
+        progress_layout.setContentsMargins(16, 14, 16, 14)
+        progress_layout.setSpacing(8)
+
+        progress_header = QHBoxLayout()
+        progress_header.setSpacing(10)
 
         self.item_label = plain_label(bold=True)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setProperty("role", "danger")
+        self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_button.clicked.connect(self.cancel_download)
+
+        progress_header.addWidget(self.item_label, 1)
+        progress_header.addWidget(self.cancel_button)
+        progress_layout.addLayout(progress_header)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(10)
-        self.progress_label = plain_label()
+        self.progress_bar.setFixedHeight(8)
+        self.progress_label = plain_label(muted=True)
 
-        progress_layout.addWidget(self.item_label)
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_label)
         layout.addWidget(self.progress_box)
 
-        # Status line
-        status_row = QHBoxLayout()
+        # 8. Contextual status & result bar (right-aligned action buttons)
+        self.status_box = QFrame()
+        self.status_box.setProperty("card", True)
+        status_row = QHBoxLayout(self.status_box)
+        status_row.setContentsMargins(16, 12, 16, 12)
+        status_row.setSpacing(10)
 
         self.status_label = plain_label()
 
+        self.open_button = QPushButton("Open folder")
+        self.open_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_button.clicked.connect(self.open_folder)
+
+        self.failures_button = QPushButton("View failed")
+        self.failures_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.failures_button.clicked.connect(self.show_failures)
+
         self.diagnostics_button = QPushButton("Copy diagnostics")
+        self.diagnostics_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.diagnostics_button.setToolTip(
             "Copy technical details to share when reporting a problem"
         )
@@ -554,14 +774,23 @@ class MainWindow(QWidget):
         self.diagnostics_button.hide()
 
         status_row.addWidget(self.status_label, 1)
-        status_row.addWidget(
-            self.diagnostics_button, 0, Qt.AlignmentFlag.AlignTop
-        )
-        layout.addLayout(status_row)
+        status_row.addWidget(self.open_button)
+        status_row.addWidget(self.failures_button)
+        status_row.addWidget(self.diagnostics_button)
+        layout.addWidget(self.status_box)
 
         layout.addStretch(1)
 
     # ----- state ----------------------------------------------------------
+
+    def _update_status_visibility(self):
+        has_content = (
+            bool(self.status_label.text())
+            or self.open_button.isVisibleTo(self.status_box)
+            or self.failures_button.isVisibleTo(self.status_box)
+            or self.diagnostics_button.isVisibleTo(self.status_box)
+        )
+        self.status_box.setVisible(has_content)
 
     def set_state(self, state):
         self.state = state
@@ -573,9 +802,7 @@ class MainWindow(QWidget):
 
         self.url_input.setEnabled(not busy)
         self.fetch_button.setEnabled(not busy)
-        self.fetch_button.setText(
-            "Fetching…" if state == "fetching" else "Fetch"
-        )
+        self.fetch_button.setText("Fetching…" if state == "fetching" else "Fetch")
         self.folder_button.setEnabled(not busy)
         self.update_button.setEnabled(not busy)
 
@@ -597,21 +824,17 @@ class MainWindow(QWidget):
         self.cancel_button.setVisible(state == "downloading")
         self.cancel_button.setEnabled(True)
         self.cancel_button.setText("Cancel")
-        self.open_button.setVisible(
-            state == "done" and self.last_folder is not None
-        )
-        self.failures_button.setVisible(
-            state == "done" and bool(self.failed_items)
-        )
+        self.open_button.setVisible(state == "done" and self.last_folder is not None)
+        self.failures_button.setVisible(state == "done" and bool(self.failed_items))
 
         self.progress_box.setVisible(busy)
         self.item_label.setVisible(
-            state == "downloading"
-            and is_playlist
-            and bool(self.item_label.text())
+            (state == "fetching")
+            or (state == "downloading" and bool(self.item_label.text()))
         )
 
         self.update_download_button()
+        self._update_status_visibility()
         self.fit_window(shrink=(state == "idle"))
 
     def fit_window(self, shrink=False):
@@ -635,10 +858,17 @@ class MainWindow(QWidget):
             self.download_button.setEnabled(True)
 
     def show_status(self, text, level="info"):
-        color = STATUS_COLORS.get(level)
-        self.status_label.setStyleSheet(f"color: {color};" if color else "")
+        self._status_level = level
+        palette = THEME_STATUS_COLORS.get(
+            self.current_theme, THEME_STATUS_COLORS["dark"]
+        )
+        color = palette.get(level)
+        self.status_label.setStyleSheet(
+            f"color: {color}; font-weight: 500;" if color else ""
+        )
         self.status_label.setText(text)
         self.diagnostics_button.setVisible(level == "error" and bool(text))
+        self._update_status_visibility()
 
     def copy_diagnostics(self):
         QApplication.clipboard().setText(diagnostics_text())
@@ -672,13 +902,12 @@ class MainWindow(QWidget):
             self.thumb.setStyleSheet("")
 
             if data and pixmap.loadFromData(data):
-                self.thumb.setPixmap(
-                    pixmap.scaled(
-                        self.thumb.size(),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
+                scaled = pixmap.scaled(
+                    self.thumb.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
                 )
+                self.thumb.setPixmap(rounded_pixmap(scaled, radius=8))
                 return
 
             self.thumb.clear()
@@ -687,7 +916,7 @@ class MainWindow(QWidget):
                 self.thumb.setText(placeholder)
                 self.thumb.setStyleSheet(
                     "background-color: rgba(128, 128, 128, 0.15); "
-                    "border-radius: 4px; font-weight: bold; "
+                    "border-radius: 8px; font-weight: bold; "
                     "letter-spacing: 2px;"
                 )
 
@@ -796,8 +1025,7 @@ class MainWindow(QWidget):
         checked = [
             i + 1
             for i in range(total)
-            if self.playlist_list.item(i).checkState()
-            == Qt.CheckState.Checked
+            if self.playlist_list.item(i).checkState() == Qt.CheckState.Checked
         ]
 
         if not checked or len(checked) == total:
@@ -867,8 +1095,7 @@ class MainWindow(QWidget):
         return [
             entry
             for index, entry in enumerate(self.playlist.entries)
-            if self.playlist_list.item(index).checkState()
-            == Qt.CheckState.Checked
+            if self.playlist_list.item(index).checkState() == Qt.CheckState.Checked
         ]
 
     # ----- fetching -------------------------------------------------------
@@ -937,19 +1164,17 @@ class MainWindow(QWidget):
 
         self.url = url
         self.failed_items = []
-        self.show_status(
+        self.show_status("")
+        self.item_label.setText(
             "Fetching playlist information…"
             if prefer_playlist
-            else "Fetching information…"
+            else "Fetching video information…"
         )
-        self.item_label.setText("")
         self.progress_bar.setRange(0, 0)
         self.progress_label.setText("")
         self.set_state("fetching")
 
-        task = self.start_task(
-            lambda thread: fetch_everything(url, prefer_playlist)
-        )
+        task = self.start_task(lambda thread: fetch_everything(url, prefer_playlist))
         task.done.connect(self.on_fetched)
         task.failed.connect(self.on_fetch_failed)
         task.start()
@@ -1028,7 +1253,7 @@ class MainWindow(QWidget):
             saved = settings.get("video_quality")
 
         else:
-            self.quality_label.setText("Audio quality")
+            self.quality_label.setText("Bitrate")
 
             for choice in AUDIO_CHOICES:
                 self.quality_box.addItem(audio_label(choice), choice)
@@ -1047,8 +1272,7 @@ class MainWindow(QWidget):
 
         if setting is None:
             self.show_status(
-                "No supported MP4 resolutions for this video. "
-                "Try the Audio option.",
+                "No supported MP4 resolutions for this video. " "Try the Audio option.",
                 "warning",
             )
             return
@@ -1072,19 +1296,19 @@ class MainWindow(QWidget):
             selected = self.get_checked_entries()
 
             if not selected:
-                self.show_status(
-                    "Select at least one video to download.", "error"
-                )
+                self.show_status("Select at least one video to download.", "error")
                 return
 
-            folder_name = (
-                self.subfolder_input.text().strip() or self.playlist.title
-            )
+            folder_name = self.subfolder_input.text().strip() or self.playlist.title
 
             def job(thread):
                 return download_playlist(
-                    selected, kind, setting, folder_name,
-                    reporter=QtReporter(thread), cancel=cancel,
+                    selected,
+                    kind,
+                    setting,
+                    folder_name,
+                    reporter=QtReporter(thread),
+                    cancel=cancel,
                 )
 
             done_handler = self.on_playlist_done
@@ -1095,8 +1319,11 @@ class MainWindow(QWidget):
 
             def job(thread):
                 return function(
-                    url, setting,
-                    info=info, reporter=QtReporter(thread), cancel=cancel,
+                    url,
+                    setting,
+                    info=info,
+                    reporter=QtReporter(thread),
+                    cancel=cancel,
                 )
 
             done_handler = self.on_download_done
@@ -1106,7 +1333,7 @@ class MainWindow(QWidget):
         self.failed_items = []
 
         self.show_status("")
-        self.item_label.setText("")
+        self.item_label.setText("Starting download…")
         self.progress_bar.setRange(0, 0)
         self.progress_label.setText("")
         self.set_state("downloading")
@@ -1140,20 +1367,21 @@ class MainWindow(QWidget):
 
     def on_stage(self, text):
         # Merging and converting can't be interrupted.
-        self.show_status(text)
+        self.item_label.setText(text)
+        self.item_label.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.progress_label.setText("")
         self.cancel_button.setEnabled(False)
 
     def on_progress(self, downloaded, total, speed, eta):
+        if self.mode == "video":
+            self.item_label.setText("Downloading…")
+            self.item_label.setVisible(True)
+
         if total:
             self.progress_bar.setRange(0, 1000)
-            self.progress_bar.setValue(
-                min(1000, int(downloaded * 1000 / total))
-            )
-            parts = [
-                f"{format_file_size(downloaded)} / {format_file_size(total)}"
-            ]
+            self.progress_bar.setValue(min(1000, int(downloaded * 1000 / total)))
+            parts = [f"{format_file_size(downloaded)} / {format_file_size(total)}"]
         else:
             self.progress_bar.setRange(0, 0)
             parts = [format_file_size(downloaded)]
@@ -1172,11 +1400,7 @@ class MainWindow(QWidget):
         self.progress_label.clear()
 
     def remember_choice(self):
-        key = (
-            "video_quality"
-            if self.download_kind == "video"
-            else "audio_bitrate"
-        )
+        key = "video_quality" if self.download_kind == "video" else "audio_bitrate"
         remember_setting(key, self.download_setting)
 
     def on_download_done(self, result):
@@ -1184,13 +1408,11 @@ class MainWindow(QWidget):
 
         if result.status == "completed":
             self.show_status("✔ Download complete", "success")
-            notify("Download complete", self.summary.title)
+            self.send_notification("Download complete", self.summary.title)
             self.remember_choice()
 
         elif result.status == "exists":
-            self.show_status(
-                f"Already downloaded: {result.filename}", "warning"
-            )
+            self.show_status(f"Already downloaded: {result.filename}", "warning")
 
         else:
             self.show_status("Download cancelled.", "warning")
@@ -1219,7 +1441,7 @@ class MainWindow(QWidget):
             self.show_status(f"✔ Playlist complete — {summary_text}", "success")
 
         if result.completed:
-            notify(
+            self.send_notification(
                 "Playlist finished",
                 f"{result.completed} of {result.total} downloaded",
             )
@@ -1238,14 +1460,9 @@ class MainWindow(QWidget):
         if not self.failed_items:
             return
 
-        lines = [
-            f"• {title}\n   {reason}"
-            for title, reason in self.failed_items
-        ]
+        lines = [f"• {title}\n   {reason}" for title, reason in self.failed_items]
 
-        QMessageBox.warning(
-            self, "Failed Playlist Items", "\n\n".join(lines)
-        )
+        QMessageBox.warning(self, "Failed Playlist Items", "\n\n".join(lines))
 
     # ----- folder ---------------------------------------------------------
 
@@ -1267,13 +1484,12 @@ class MainWindow(QWidget):
 
     def open_folder(self):
         if self.last_folder is not None:
-            QDesktopServices.openUrl(
-                QUrl.fromLocalFile(str(self.last_folder))
-            )
-        # ----- yt-dlp updates -------------------------------------------------
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_folder)))
+
+    # ----- yt-dlp updates -------------------------------------------------
 
     def on_update_available(self, version):
-        self.update_button.setText(f"Update yt-dlp ({version} available)")
+        self.update_button.setText(f"Update yt-dlp ({version})")
         self.update_button.setToolTip(
             f"A newer yt-dlp, version {version}, is available."
         )
@@ -1298,9 +1514,7 @@ class MainWindow(QWidget):
 
         task = self.start_task(lambda thread: updater.check_for_update())
         task.done.connect(lambda info: self.on_update_checked(progress, info))
-        task.failed.connect(
-            lambda message: self.on_update_failed(progress, message)
-        )
+        task.failed.connect(lambda message: self.on_update_failed(progress, message))
         task.start()
 
     def on_update_failed(self, progress, message):
@@ -1329,9 +1543,7 @@ class MainWindow(QWidget):
             box.setInformativeText(
                 f"You have {info.current}. Download and install the update?"
             )
-            install_button = box.addButton(
-                "Update", QMessageBox.ButtonRole.AcceptRole
-            )
+            install_button = box.addButton("Update", QMessageBox.ButtonRole.AcceptRole)
             box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
 
         elif info.pending_restart:
@@ -1370,9 +1582,7 @@ class MainWindow(QWidget):
 
         elif builtin_button is not None and clicked is builtin_button:
             updater.remove_update()
-            self.show_status(
-                "The built-in yt-dlp will be used after the app restarts."
-            )
+            self.show_status("The built-in yt-dlp will be used after the app restarts.")
 
     def install_update(self, info):
         progress = self.open_progress("Starting the update…")
@@ -1385,12 +1595,8 @@ class MainWindow(QWidget):
 
         task = self.start_task(job)
         task.message.connect(lambda text, level: progress.setLabelText(text))
-        task.done.connect(
-            lambda version: self.on_update_installed(progress, version)
-        )
-        task.failed.connect(
-            lambda message: self.on_update_failed(progress, message)
-        )
+        task.done.connect(lambda version: self.on_update_installed(progress, version))
+        task.failed.connect(lambda message: self.on_update_failed(progress, message))
         task.start()
 
     def on_update_installed(self, progress, version):
@@ -1405,8 +1611,7 @@ class MainWindow(QWidget):
         answer = QMessageBox.question(
             self,
             "Update yt-dlp",
-            f"yt-dlp {version} is installed.\n\n"
-            "Restart the app now to use it?",
+            f"yt-dlp {version} is installed.\n\n" "Restart the app now to use it?",
         )
 
         if answer == QMessageBox.StandardButton.Yes:
@@ -1453,6 +1658,9 @@ class MainWindow(QWidget):
                 task.terminate()
                 task.wait(2000)
 
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+
         event.accept()
 
 
@@ -1460,12 +1668,17 @@ def main():
     setup_logging()
 
     if sys.platform == "win32":
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "maverick.ytdownloader.gui"
-        )
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "maverick.ytdownloader.gui"
+            )
+        except Exception:
+            pass
 
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("yt-downloader")
 
@@ -1477,11 +1690,13 @@ def main():
         app.setWindowIcon(icon)
 
     window = MainWindow()
+    window.apply_current_theme(save=False)
     if not icon.isNull():
         window.setWindowIcon(icon)
     window.show()
 
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
