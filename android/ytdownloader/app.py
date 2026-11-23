@@ -128,16 +128,31 @@ THEMES = {
 }
 
 ANDROID_CLIENT_PROFILES: tuple[list[str] | None, ...] = (
-    None,  # Default yt-dlp clients: returns full 144p–2160p format list
+    None,
     ["web", "android_vr", "mweb"],
     ["android_vr", "web"],
     ["android", "web"],
 )
 
+_DNS_ERROR_MARKERS = (
+    "errno 7",
+    "[errno 7]",
+    "no address associated with hostname",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "getaddrinfo",
+)
+
+
+def _is_dns_or_network_error(error: Exception) -> bool:
+    """Return True if the error indicates DNS lookup or transient network failure."""
+    text = str(error).lower()
+    return any(marker in text for marker in _DNS_ERROR_MARKERS)
+
 
 def _android_extractor_args(clients: list[str] | None = None) -> dict:
     """Return YouTube extractor args for a given client list."""
-    selected = clients or ANDROID_CLIENT_PROFILES[0]
+    selected = clients or ["web", "android_vr", "mweb"]
     return {
         "youtube": {
             "player_client": selected,
@@ -424,9 +439,10 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
 
 
 def _android_fetch_info(url: str) -> dict:
-    """Extract full video format list on Android, rotating client profiles on failure."""
+    """Extract video info on Android, rotating client profiles on failure."""
     last_error: Exception | None = None
     best_info: dict | None = None
+    saw_dns_error = False
 
     for clients in ANDROID_CLIENT_PROFILES:
         opts = {
@@ -434,6 +450,8 @@ def _android_fetch_info(url: str) -> dict:
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
+            "socket_timeout": 15,
+            "retries": 2,
         }
         if clients is not None:
             opts["extractor_args"] = _android_extractor_args(clients)
@@ -443,11 +461,13 @@ def _android_fetch_info(url: str) -> dict:
                 info = ydl.extract_info(url, download=False)
             if info:
                 best_info = info
-                # Keep trying if this client only returned a single 360p format
                 if len(quality_options(info)) > 1:
                     return info
         except Exception as error:
             last_error = error
+            if _is_dns_or_network_error(error):
+                saw_dns_error = True
+                continue
             msg = str(error).lower()
             if (
                 "not a bot" in msg
@@ -462,11 +482,18 @@ def _android_fetch_info(url: str) -> dict:
     if best_info is not None:
         return best_info
 
+    if saw_dns_error:
+        raise DownloadError(
+            "Android DNS error (Errno 7): could not resolve YouTube host. "
+            "Toggle airplane mode or switch Wi-Fi / 5G and retry."
+        )
+
     raise DownloadError(
         friendly_error(last_error)
         if last_error
         else "Could not retrieve video information."
     )
+
 
 def _android_download_media(
     url: str,
@@ -476,7 +503,7 @@ def _android_download_media(
     reporter: Reporter,
     cancel: threading.Event,
 ) -> DownloadResult:
-    """Download playable media on Android with client and 403/format fallbacks."""
+    """Download playable media on Android with client, DNS, and 403/format fallbacks."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if kind == "video":
@@ -498,6 +525,8 @@ def _android_download_media(
         ]
 
     last_error: Exception | None = None
+    saw_dns_error = False
+
     for clients in ANDROID_CLIENT_PROFILES:
         for idx, spec in enumerate(format_specs):
             if cancel.is_set():
@@ -512,6 +541,9 @@ def _android_download_media(
                 "outtmpl": outtmpl,
                 "progress_hooks": [tracker],
                 "restrictfilenames": False,
+                "socket_timeout": 15,
+                "retries": 3,
+                "fragment_retries": 3,
             }
             if clients is not None:
                 opts["extractor_args"] = _android_extractor_args(clients)
@@ -530,6 +562,10 @@ def _android_download_media(
                 return DownloadResult("cancelled", output_dir)
             except Exception as error:
                 last_error = error
+                if _is_dns_or_network_error(error):
+                    saw_dns_error = True
+                    time.sleep(1.0)
+                    continue
                 msg = str(error).lower()
                 if (
                     "requested format is not available" in msg
@@ -544,11 +580,17 @@ def _android_download_media(
                 raise DownloadError(friendly_error(error)) from error
 
     reporter.progress_done()
+    if saw_dns_error:
+        raise DownloadError(
+            "Android DNS error (Errno 7): no address associated with hostname. "
+            "Toggle airplane mode or switch Wi-Fi / 5G and try again."
+        )
     raise DownloadError(
         friendly_error(last_error)
         if last_error
         else "No compatible stream is available for this video."
     )
+
 
 def _tree_uri_to_local_path(uri_str: str) -> Path | None:
     """Convert an Android SAF document tree URI into a filesystem path when possible."""
@@ -816,7 +858,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.options_card)
         self._card_inners.extend([options_inner, mode_row])
 
-        # 5. Save Location card (clean button sizing & native folder picker)
+        # 5. Save Location card
         save_caption = toga.Label(
             "SAVE LOCATION",
             style=Pack(font_family=f, flex=1, font_size=9, font_weight=BOLD),
@@ -918,7 +960,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.progress_card)
         self._card_inners.extend([progress_inner, progress_top])
 
-        # 8. Status banner card (vertical column + non-scrolling Android TextView)
+        # 8. Status banner card (wraps across multiple lines in portrait mode)
         self.status_label = toga.Label(
             "",
             style=Pack(font_family=f, font_size=11, font_weight=BOLD),
@@ -1287,15 +1329,19 @@ class YTDownloaderApp(toga.App):
             saved = settings.get("video_quality")
         else:
             self.quality_caption.text = "AUDIO QUALITY"
-            choices = list(AUDIO_CHOICES) + (
-                [ORIGINAL_AUDIO] if ORIGINAL_AUDIO not in AUDIO_CHOICES else []
-            )
-            for choice in choices:
-                label = audio_label(choice)
-                if not self.use_ffmpeg and choice != ORIGINAL_AUDIO:
-                    label = f"{label} (M4A stream)"
-                labels.append(label)
-                values.append(choice)
+            if self.use_ffmpeg:
+                choices = list(AUDIO_CHOICES) + (
+                    [ORIGINAL_AUDIO] if ORIGINAL_AUDIO not in AUDIO_CHOICES else []
+                )
+                for choice in choices:
+                    labels.append(audio_label(choice))
+                    values.append(choice)
+            else:
+                labels.append("Original audio (M4A, no conversion)")
+                values.append(ORIGINAL_AUDIO)
+                for choice in AUDIO_CHOICES:
+                    labels.append(f"{audio_label(choice)} (Direct M4A, no re-encode)")
+                    values.append(choice)
             saved = settings.get("audio_bitrate")
 
         self.quality_values = values
@@ -1355,7 +1401,14 @@ class YTDownloaderApp(toga.App):
             return
         except Exception as error:
             logging.getLogger("ytdl").error("Download failed", exc_info=True)
-            self.call_on_ui(self.on_download_failed, friendly_error(error))
+            if _is_dns_or_network_error(error):
+                msg = (
+                    "Android DNS error (Errno 7): no address associated with hostname. "
+                    "Toggle airplane mode or switch Wi-Fi / 5G and try again."
+                )
+            else:
+                msg = friendly_error(error)
+            self.call_on_ui(self.on_download_failed, msg)
             return
 
         self.call_on_ui(self.on_download_done, result, kind, setting)
