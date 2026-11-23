@@ -127,10 +127,11 @@ THEMES = {
     },
 }
 
-ANDROID_CLIENT_PROFILES: tuple[list[str], ...] = (
-    ["android", "android_vr", "web", "mweb"],
+ANDROID_CLIENT_PROFILES: tuple[list[str] | None, ...] = (
+    None,  # Default yt-dlp clients: returns full 144p–2160p format list
+    ["web", "android_vr", "mweb"],
     ["android_vr", "web"],
-    ["web", "mweb"],
+    ["android", "web"],
 )
 
 
@@ -423,34 +424,49 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
 
 
 def _android_fetch_info(url: str) -> dict:
-    """Extract video info on Android, rotating client profiles if needed."""
+    """Extract full video format list on Android, rotating client profiles on failure."""
     last_error: Exception | None = None
+    best_info: dict | None = None
+
     for clients in ANDROID_CLIENT_PROFILES:
         opts = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
-            "extractor_args": _android_extractor_args(clients),
         }
+        if clients is not None:
+            opts["extractor_args"] = _android_extractor_args(clients)
+
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
             if info:
-                return info
+                best_info = info
+                # Keep trying if this client only returned a single 360p format
+                if len(quality_options(info)) > 1:
+                    return info
         except Exception as error:
             last_error = error
             msg = str(error).lower()
-            if "not a bot" in msg or "sign in" in msg or "http error 403" in msg:
+            if (
+                "not a bot" in msg
+                or "sign in" in msg
+                or "http error 403" in msg
+                or "js runtime" in msg
+                or "challenge" in msg
+            ):
                 continue
             raise DownloadError(friendly_error(error)) from error
+
+    if best_info is not None:
+        return best_info
 
     raise DownloadError(
         friendly_error(last_error)
         if last_error
         else "Could not retrieve video information."
     )
-
 
 def _android_download_media(
     url: str,
@@ -493,11 +509,12 @@ def _android_download_media(
                 "quiet": True,
                 "noplaylist": True,
                 "format": spec,
-                "extractor_args": _android_extractor_args(clients),
                 "outtmpl": outtmpl,
                 "progress_hooks": [tracker],
                 "restrictfilenames": False,
             }
+            if clients is not None:
+                opts["extractor_args"] = _android_extractor_args(clients)
             if kind == "video" and idx < 2:
                 opts["format_sort"] = [f"res:{quality}", "proto", "vcodec:h264"]
             elif kind == "audio":
@@ -519,6 +536,8 @@ def _android_download_media(
                     or "no video formats found" in msg
                     or "format is not available" in msg
                     or "http error 403" in msg
+                    or "not a bot" in msg
+                    or "sign in" in msg
                 ):
                     continue
                 reporter.progress_done()
@@ -530,7 +549,6 @@ def _android_download_media(
         if last_error
         else "No compatible stream is available for this video."
     )
-
 
 def _tree_uri_to_local_path(uri_str: str) -> Path | None:
     """Convert an Android SAF document tree URI into a filesystem path when possible."""
