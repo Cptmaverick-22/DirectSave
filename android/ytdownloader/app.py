@@ -128,6 +128,28 @@ THEMES = {
 }
 
 
+def _android_extractor_args() -> dict:
+    """Return YouTube extractor args suited for Android clients."""
+    return {
+        "youtube": {
+            "player_client": ["android_vr", "web"],
+        }
+    }
+
+
+def _enable_android_multiline(label_widget: toga.Label, max_lines: int = 8):
+    """Allow Android TextView labels to wrap cleanly in portrait mode."""
+    if not is_android():
+        return
+    try:
+        native = label_widget._impl.native
+        native.setSingleLine(False)
+        native.setMaxLines(max_lines)
+        native.setEllipsize(None)
+    except Exception:
+        pass
+
+
 def _resolve_ui_font() -> str:
     """Use Inter if bundled or installed, else fall back to a clean system UI font."""
     resources = Path(__file__).parent / "resources"
@@ -392,6 +414,27 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
     return fallback_url
 
 
+def _android_fetch_info(url: str) -> dict:
+    """Extract video info on Android using mobile/VR extractor clients."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "extractor_args": _android_extractor_args(),
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not info:
+            raise DownloadError("Could not retrieve video information.")
+        return info
+    except DownloadError:
+        raise
+    except Exception as error:
+        raise DownloadError(friendly_error(error)) from error
+
+
 def _android_download_media(
     url: str,
     kind: str,
@@ -407,7 +450,6 @@ def _android_download_media(
         quality = int(setting)
         tag = f"[{quality}p]"
         outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
-        # Prefer muxed/progressive streams at or below requested height so no merge step fails.
         format_specs = [
             f"best[ext=mp4][height<={quality}][acodec!=none][vcodec!=none]",
             f"best[height<={quality}][acodec!=none][vcodec!=none]",
@@ -438,6 +480,7 @@ def _android_download_media(
                 if kind == "video"
                 else ["abr", "proto"]
             ),
+            "extractor_args": _android_extractor_args(),
             "outtmpl": outtmpl,
             "progress_hooks": [tracker],
             "restrictfilenames": False,
@@ -664,12 +707,14 @@ class YTDownloaderApp(toga.App):
 
         self.title_label = toga.Label(
             "",
-            style=Pack(font_family=f, font_size=13, font_weight=BOLD),
+            style=Pack(font_family=f, font_size=13, font_weight=BOLD, flex=1),
         )
         self.meta_label = toga.Label(
             "",
-            style=Pack(font_family=f, font_size=10),
+            style=Pack(font_family=f, font_size=10, flex=1),
         )
+        _enable_android_multiline(self.title_label, max_lines=3)
+        _enable_android_multiline(self.meta_label, max_lines=2)
         self._primary_labels.append(self.title_label)
         self._muted_labels.append(self.meta_label)
 
@@ -765,6 +810,7 @@ class YTDownloaderApp(toga.App):
             _format_responsive_path(self.download_dir, self._current_width),
             style=Pack(font_family=f, font_size=11, flex=1),
         )
+        _enable_android_multiline(self.folder_label, max_lines=3)
         self._primary_labels.append(self.folder_label)
 
         self.folder_inner = toga.Box(style=Pack(direction=COLUMN, gap=6))
@@ -810,8 +856,9 @@ class YTDownloaderApp(toga.App):
 
         self.progress_bar = toga.ProgressBar(max=100, value=0)
         self.progress_label = toga.Label(
-            "", style=Pack(font_family=f, font_size=10)
+            "", style=Pack(font_family=f, font_size=10, flex=1)
         )
+        _enable_android_multiline(self.progress_label, max_lines=2)
         self._muted_labels.append(self.progress_label)
 
         self.cancel_button = toga.Button(
@@ -835,16 +882,17 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.progress_card)
         self._card_inners.extend([progress_inner, progress_top])
 
-        # 8. Status banner card (wraps cleanly across lines)
+        # 8. Status banner card (wraps across multiple lines on narrow screens)
         self.status_label = toga.Label(
             "",
             style=Pack(font_family=f, font_size=11, font_weight=BOLD, flex=1),
         )
-        status_inner = toga.Box(style=Pack(direction=ROW))
+        _enable_android_multiline(self.status_label, max_lines=8)
+        status_inner = toga.Box(style=Pack(direction=COLUMN))
         status_inner.add(self.status_label)
         self.status_card = _make_card(status_inner)
         self._cards.append(self.status_card)
-        self._card_inners.append(status_inner)
+        self._card_inners.extend([status_inner])
 
         # Responsive vertical container inside ScrollContainer
         self.content_box = toga.Box(
@@ -926,6 +974,7 @@ class YTDownloaderApp(toga.App):
         self.status_label.style.color = t["status"].get(
             self._status_level, t["status"]["info"]
         )
+        _enable_android_multiline(self.status_label, max_lines=8)
 
         self._style_mode_buttons()
 
@@ -964,7 +1013,6 @@ class YTDownloaderApp(toga.App):
                 )
 
                 def _on_tree_result(result_code, data):
-                    # Activity.RESULT_OK == -1
                     if result_code != -1 or data is None:
                         return
                     uri = data.getData()
@@ -1075,6 +1123,7 @@ class YTDownloaderApp(toga.App):
         self.status_label.text = text
         palette = THEMES[self.theme_name]["status"]
         self.status_label.style.color = palette.get(level, palette["info"])
+        _enable_android_multiline(self.status_label, max_lines=8)
         self._rebuild_visible_sections()
 
     def on_url_edited(self, widget):
@@ -1114,7 +1163,11 @@ class YTDownloaderApp(toga.App):
 
     def _fetch_worker(self, url: str):
         try:
-            info = fetch_video_info(url)
+            info = (
+                _android_fetch_info(url)
+                if is_android()
+                else fetch_video_info(url)
+            )
             summary = summarize_video(info)
             options = quality_options(info)
             thumb_url = _pick_jpeg_thumbnail_url(info, summary.thumbnail)
