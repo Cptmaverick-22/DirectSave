@@ -400,7 +400,7 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
     return fallback_url
 
 
-def _direct_download(
+def _android_fallback_download(
     url: str,
     kind: str,
     setting,
@@ -408,43 +408,68 @@ def _direct_download(
     reporter: Reporter,
     cancel: threading.Event,
 ) -> DownloadResult:
-    """Fallback single-stream download when FFmpeg is not bundled (Android)."""
+    """Download on Android without requiring an external ffmpeg binary."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if kind == "video":
-        fmt = (
-            f"best[ext=mp4][height<={setting}][acodec!=none][vcodec!=none]/"
-            "best[ext=mp4][acodec!=none][vcodec!=none]/"
-            "best[acodec!=none][vcodec!=none]"
-        )
-        tag = f"[{setting}p]"
+        quality = int(setting)
+        tag = f"[{quality}p]"
+        outtmpl = str(output_dir / f"%(title).100B {tag} [%(id)s].%(ext)s")
+        format_specs = [
+            f"bestvideo[ext=mp4][height={quality}]+bestaudio[ext=m4a]",
+            f"bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]",
+            f"best[ext=mp4][height<={quality}]",
+            "best[ext=mp4]/best",
+        ]
     else:
-        fmt = "bestaudio[ext=m4a]/bestaudio"
-        tag = f"[{ORIGINAL_AUDIO}]"
+        tag = f"[{setting}]" if setting == ORIGINAL_AUDIO else f"[{setting}kbps]"
+        outtmpl = str(output_dir / f"%(title).100B {tag} [%(id)s].%(ext)s")
+        format_specs = [
+            "bestaudio[ext=m4a]/bestaudio/best",
+        ]
 
-    outtmpl = str(output_dir / f"%(title).120B {tag} [%(id)s].%(ext)s")
-    tracker = ProgressTracker(reporter, expected_total=None, cancel=cancel)
-    opts = {
-        "quiet": True,
-        "noplaylist": True,
-        "format": fmt,
-        "outtmpl": outtmpl,
-        "progress_hooks": [tracker],
-        "restrictfilenames": False,
-    }
+    last_error: Exception | None = None
+    for spec in format_specs:
+        if cancel.is_set():
+            reporter.progress_done()
+            return DownloadResult("cancelled", output_dir)
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-    except DownloadCancelled:
-        reporter.progress_done()
-        return DownloadResult("cancelled", output_dir)
-    except Exception as error:
-        reporter.progress_done()
-        raise DownloadError(friendly_error(error)) from error
+        tracker = ProgressTracker(reporter, expected_total=None, cancel=cancel)
+        opts = {
+            "quiet": True,
+            "noplaylist": True,
+            "format": spec,
+            "format_sort": (
+                [f"res:{setting}", "proto", "vcodec:h264"]
+                if kind == "video"
+                else ["abr", "proto"]
+            ),
+            "outtmpl": outtmpl,
+            "progress_hooks": [tracker],
+            "restrictfilenames": False,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            reporter.progress_done()
+            return DownloadResult("completed", output_dir)
+        except DownloadCancelled:
+            reporter.progress_done()
+            return DownloadResult("cancelled", output_dir)
+        except Exception as error:
+            last_error = error
+            msg = str(error).lower()
+            # Retry with broader format if a specific resolution stream wasn't offered.
+            if "requested format is not available" in msg or "no video formats found" in msg:
+                continue
+            reporter.progress_done()
+            raise DownloadError(friendly_error(error)) from error
 
     reporter.progress_done()
-    return DownloadResult("completed", output_dir)
+    raise DownloadError(
+        friendly_error(last_error) if last_error else "That quality isn't available for this video."
+    )
 
 
 def _make_card(inner_box: toga.Box) -> toga.Box:
@@ -562,7 +587,7 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_cycle_theme,
             style=Pack(
                 font_family=f,
-                width=108,
+                width=112,
                 height=34,
                 font_size=10,
                 font_weight=BOLD,
@@ -600,7 +625,7 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_clear_pressed,
             style=Pack(
                 font_family=f,
-                width=82,
+                width=86,
                 height=40,
                 font_size=11,
                 font_weight=BOLD,
@@ -687,7 +712,7 @@ class YTDownloaderApp(toga.App):
 
         self.quality_selection = toga.Selection(
             items=[],
-            style=Pack(font_family=f, font_size=11, height=38),
+            style=Pack(font_family=f, font_size=11, height=40),
         )
 
         options_inner = toga.Box(style=Pack(direction=COLUMN, gap=8))
@@ -700,7 +725,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.options_card)
         self._card_inners.extend([options_inner, mode_row])
 
-        # 5. Save Location card (responsive header row + full-width path below)
+        # 5. Save Location card (clean button sizing so "CHANGE" never clips)
         save_caption = toga.Label(
             "SAVE LOCATION",
             style=Pack(font_family=f, flex=1, font_size=9, font_weight=BOLD),
@@ -712,8 +737,8 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_change_folder,
             style=Pack(
                 font_family=f,
-                width=88,
-                height=30,
+                width=102,
+                height=32,
                 font_size=10,
                 font_weight=BOLD,
             ),
@@ -755,7 +780,7 @@ class YTDownloaderApp(toga.App):
             btn = toga.Button(
                 preset_name,
                 on_press=lambda _w, p=preset_path: self._apply_preset_folder(p),
-                style=Pack(font_family=f, flex=1, height=32, font_size=10),
+                style=Pack(font_family=f, flex=1, height=34, font_size=10),
             )
             self._secondary_buttons.append(btn)
             preset_row.add(btn)
@@ -965,6 +990,10 @@ class YTDownloaderApp(toga.App):
         if self.state in ("fetching", "downloading"):
             return
 
+        if is_android():
+            self._toggle_folder_editor()
+            return
+
         try:
             dialog = toga.SelectFolderDialog(
                 title="Choose download folder",
@@ -1005,10 +1034,7 @@ class YTDownloaderApp(toga.App):
         self._refresh_responsive_text()
         if self._editing_folder:
             self._toggle_folder_editor()
-        self.show_status(
-            f"Save folder updated: {_format_responsive_path(folder, self._current_width)}",
-            "success",
-        )
+        self.show_status("Save folder updated.", "success")
 
     # ----- state & visibility ---------------------------------------------
 
@@ -1188,17 +1214,13 @@ class YTDownloaderApp(toga.App):
 
         if is_video:
             self.quality_caption.text = "VIDEO QUALITY"
-            if self.has_ffmpeg:
-                for height, size in self.video_options:
-                    text = f"{height}p"
-                    if size:
-                        text += f"  ·  ~{format_file_size(size)}"
-                    labels.append(text)
-                    values.append(height)
-            else:
-                for height in (720, 480, 360):
-                    labels.append(f"Up to {height}p (Direct MP4)")
-                    values.append(height)
+            options = self.video_options or [(720, None), (480, None), (360, None)]
+            for height, size in options:
+                text = f"{height}p MP4"
+                if size:
+                    text += f"  ·  ~{format_file_size(size)}"
+                labels.append(text)
+                values.append(height)
             saved = settings.get("video_quality")
         else:
             self.quality_caption.text = "AUDIO QUALITY"
@@ -1259,7 +1281,7 @@ class YTDownloaderApp(toga.App):
                     cancel=cancel,
                 )
             else:
-                result = _direct_download(
+                result = _android_fallback_download(
                     url, kind, setting, self.download_dir, reporter, cancel
                 )
         except DownloadError as error:
@@ -1320,14 +1342,9 @@ class YTDownloaderApp(toga.App):
         if result.status == "completed":
             key = "video_quality" if kind == "video" else "audio_bitrate"
             remember_setting(key, setting)
-            self.show_status(
-                f"✔ Download complete · {_format_responsive_path(result.folder, self._current_width)}",
-                "success",
-            )
+            self.show_status("Download complete.", "success")
         elif result.status == "exists":
-            self.show_status(
-                f"Already downloaded: {result.filename}", "warning"
-            )
+            self.show_status("Already downloaded.", "warning")
         else:
             self.show_status("Download cancelled.", "warning")
 
