@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 import logging
 from pathlib import Path
 import shutil
@@ -60,7 +61,9 @@ THEME_ORDER = ("obsidian", "light")
 THEMES = {
     "obsidian": {
         "label": "Obsidian",
-        "toggle_text": "☀ Light",
+        "badge_text": "☾ Obsidian",
+        "is_light": False,
+        "bar_bg": "#0B0B0E",
         "page_bg": "#0B0B0E",
         "card_bg": "#16161A",
         "input_bg": "#202026",
@@ -85,7 +88,9 @@ THEMES = {
     },
     "light": {
         "label": "Light",
-        "toggle_text": "☾ Obsidian",
+        "badge_text": "☀ Light",
+        "is_light": True,
+        "bar_bg": "#FFFFFF",
         "page_bg": "#F4F4F5",
         "card_bg": "#FFFFFF",
         "input_bg": "#F4F4F6",
@@ -153,6 +158,18 @@ _DNS_ERROR_MARKERS = (
     "name or service not known",
     "getaddrinfo",
 )
+
+
+def _time_greeting() -> tuple[str, str]:
+    """Return a time-of-day greeting and subtle subtitle."""
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "Good morning", "Paste a YouTube link to get started"
+    if 12 <= hour < 17:
+        return "Good afternoon", "Paste a YouTube link to get started"
+    if 17 <= hour < 22:
+        return "Good evening", "Paste a YouTube link to get started"
+    return "Good night", "Paste a YouTube link to get started"
 
 
 def _is_dns_or_network_error(error: Exception) -> bool:
@@ -302,7 +319,7 @@ def _winforms_rounded_path(width: int, height: int, radius: int, inset: int = 0)
 
 
 class _NativeStyler:
-    """Applies rounded corners & crisp 1px borders on both Android and Windows."""
+    """Applies rounded corners, borders, and native chrome on Android & Windows."""
 
     def __init__(self):
         self._styles: dict[int, dict] = {}
@@ -317,12 +334,18 @@ class _NativeStyler:
         is_button: bool = False,
     ):
         if is_android():
-            self._apply_android(widget, bg_hex, border_hex, radius)
+            self._apply_android(widget, bg_hex, border_hex, radius, is_button)
         elif sys.platform == "win32":
             self._apply_winforms(widget, bg_hex, border_hex, radius, is_button)
 
     @staticmethod
-    def _apply_android(widget, bg_hex: str, border_hex: str, radius_dp: int):
+    def _apply_android(
+        widget,
+        bg_hex: str,
+        border_hex: str,
+        radius_dp: int,
+        is_button: bool = False,
+    ):
         try:
             from android.graphics import Color
             from android.graphics.drawable import GradientDrawable
@@ -334,6 +357,61 @@ class _NativeStyler:
             drawable.setCornerRadius(float(radius_dp) * density)
             drawable.setStroke(max(1, int(round(density))), Color.parseColor(border_hex))
             native.setBackground(drawable)
+            if is_button:
+                native.setAllCaps(False)
+                pad_h = int(10 * density)
+                native.setPadding(pad_h, 0, pad_h, 0)
+        except Exception:
+            pass
+
+    @staticmethod
+    def apply_android_chrome(app, bar_hex: str, text_hex: str, is_light: bool):
+        """Color the Android ActionBar and Status Bar to match the active theme."""
+        if not is_android():
+            return
+        try:
+            from android.graphics import Color
+            from android.graphics.drawable import ColorDrawable
+            from android.os import Build
+            from android.text import SpannableString
+            from android.text.style import ForegroundColorSpan
+
+            activity = app._impl.native
+            bar_color = Color.parseColor(bar_hex)
+            text_color = Color.parseColor(text_hex)
+
+            action_bar = activity.getSupportActionBar()
+            if action_bar is not None:
+                action_bar.setBackgroundDrawable(ColorDrawable(bar_color))
+                title_str = f"{APP_NAME} v{APP_VERSION}"
+                spannable = SpannableString(title_str)
+                spannable.setSpan(
+                    ForegroundColorSpan(text_color), 0, len(title_str), 0
+                )
+                action_bar.setTitle(spannable)
+
+            window = activity.getWindow()
+            window.setStatusBarColor(bar_color)
+
+            if Build.VERSION.SDK_INT >= 30:
+                from android.view import WindowInsetsController
+
+                controller = window.getInsetsController()
+                if controller is not None:
+                    flag = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    controller.setSystemBarsAppearance(
+                        flag if is_light else 0, flag
+                    )
+            else:
+                from android.view import View
+
+                decor = window.getDecorView()
+                flags = decor.getSystemUiVisibility()
+                if is_light:
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                else:
+                    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                decor.setSystemUiVisibility(flags)
         except Exception:
             pass
 
@@ -954,41 +1032,34 @@ class YTDownloaderApp(toga.App):
         self._muted_labels: list[toga.Label] = []
         self._secondary_buttons: list[toga.Button] = []
 
-        # 1. Header bar
+        # 1. Header bar (time-based greeting + active theme pill)
         self.header_box = toga.Box(
-            style=Pack(direction=ROW, align_items=CENTER, gap=10, margin_bottom=2)
+            style=Pack(direction=ROW, align_items=CENTER, gap=10, margin_bottom=4)
         )
-        icon_file = Path(__file__).parent / "resources" / "icon.png"
-        if icon_file.is_file():
-            self.header_box.add(
-                toga.ImageView(
-                    toga.Image(icon_file),
-                    style=Pack(width=34, height=34),
-                )
-            )
+        greeting, subtitle = _time_greeting()
+        self.greeting_label = toga.Label(
+            greeting,
+            style=Pack(font_family=f, font_size=17, font_weight=BOLD),
+        )
+        self.greeting_sub_label = toga.Label(
+            subtitle,
+            style=Pack(font_family=f, font_size=10),
+        )
+        _enable_android_multiline(self.greeting_sub_label, max_lines=2)
 
-        self.app_title_label = toga.Label(
-            APP_NAME,
-            style=Pack(font_family=f, font_size=16, font_weight=BOLD),
-        )
-        self.app_sub_label = toga.Label(
-            f"v{APP_VERSION}",
-            style=Pack(font_family=f, font_size=9),
-        )
-
-        self.title_col = toga.Box(style=Pack(direction=COLUMN, flex=1, gap=1))
-        self.title_col.add(self.app_title_label)
-        self.title_col.add(self.app_sub_label)
+        self.title_col = toga.Box(style=Pack(direction=COLUMN, flex=1, gap=2))
+        self.title_col.add(self.greeting_label)
+        self.title_col.add(self.greeting_sub_label)
         self.header_box.add(self.title_col)
 
         self.theme_button = toga.Button(
-            "☀ Light",
+            THEMES[self.theme_name]["badge_text"],
             on_press=self.on_cycle_theme,
             style=Pack(
                 font_family=f,
-                width=116,
-                height=34,
-                font_size=10,
+                width=132,
+                height=36,
+                font_size=11,
                 font_weight=BOLD,
             ),
         )
@@ -1264,17 +1335,21 @@ class YTDownloaderApp(toga.App):
         if save:
             remember_setting("mobile_theme", self.theme_name)
 
+        self.styler.apply_android_chrome(
+            self, t["bar_bg"], t["text"], t["is_light"]
+        )
+
         self.root_scroll.style.background_color = t["page_bg"]
         self.content_box.style.background_color = t["page_bg"]
         self.header_box.style.background_color = t["page_bg"]
         self.title_col.style.background_color = t["page_bg"]
 
-        self.app_title_label.style.color = t["text"]
-        self.app_title_label.style.background_color = t["page_bg"]
-        self.app_sub_label.style.color = t["muted"]
-        self.app_sub_label.style.background_color = t["page_bg"]
+        self.greeting_label.style.color = t["text"]
+        self.greeting_label.style.background_color = t["page_bg"]
+        self.greeting_sub_label.style.color = t["muted"]
+        self.greeting_sub_label.style.background_color = t["page_bg"]
 
-        self.theme_button.text = t["toggle_text"]
+        self.theme_button.text = t["badge_text"]
 
         for card in self._cards:
             card.style.background_color = t["card_bg"]
