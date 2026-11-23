@@ -32,7 +32,7 @@ permission."android.permission.ACCESS_NETWORK_STATE" = {}
 permission."android.permission.READ_EXTERNAL_STORAGE" = { max_sdk_version = "32" }
 permission."android.permission.WRITE_EXTERNAL_STORAGE" = { max_sdk_version = "29" }
 permission."android.permission.MANAGE_EXTERNAL_STORAGE" = {}
-android_abis = ["arm64-v8a", "armeabi-v7a"]
+android_abis = ["arm64-v8a"]
 
 [tool.briefcase.app.ytdownloader.windows]
 requires = [
