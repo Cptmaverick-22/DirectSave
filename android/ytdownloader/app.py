@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from pathlib import Path
 import shutil
@@ -152,7 +153,7 @@ def _is_dns_or_network_error(error: Exception) -> bool:
 
 def _android_extractor_args(clients: list[str] | None = None) -> dict:
     """Return YouTube extractor args for a given client list."""
-    selected = clients or ["web", "android_vr", "mweb"]
+    selected = clients or ["android_vr", "web"]
     return {
         "youtube": {
             "player_client": selected,
@@ -401,7 +402,7 @@ def _fetch_thumbnail_bytes(url: str | None) -> bytes | None:
         if parsed.scheme != "https" or not parsed.hostname:
             return None
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             if urllib.parse.urlparse(resp.geturl()).scheme != "https":
                 return None
             length = resp.headers.get("Content-Length")
@@ -450,8 +451,8 @@ def _android_fetch_info(url: str) -> dict:
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
-            "socket_timeout": 15,
-            "retries": 2,
+            "socket_timeout": 10,
+            "retries": 1,
         }
         if clients is not None:
             opts["extractor_args"] = _android_extractor_args(clients)
@@ -502,82 +503,91 @@ def _android_download_media(
     output_dir: Path,
     reporter: Reporter,
     cancel: threading.Event,
+    info: dict | None = None,
 ) -> DownloadResult:
-    """Download playable media on Android with client, DNS, and 403/format fallbacks."""
+    """Download playable media on Android quickly, reusing fetched info first."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if kind == "video":
         quality = int(setting)
         tag = f"[{quality}p]"
         outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
-        format_specs = [
-            f"best[ext=mp4][height<={quality}][acodec!=none][vcodec!=none]",
-            f"best[height<={quality}][acodec!=none][vcodec!=none]",
-            "best[ext=mp4][acodec!=none][vcodec!=none]",
-            "best[acodec!=none][vcodec!=none]",
-            "best[ext=mp4]/best",
-        ]
+        format_spec = (
+            f"best[ext=mp4][height<={quality}][acodec!=none][vcodec!=none]"
+            f"/best[height<={quality}][acodec!=none][vcodec!=none]"
+            "/best[ext=mp4]/best"
+        )
     else:
-        tag = f"[{setting}]" if setting == ORIGINAL_AUDIO else f"[{setting}kbps]"
+        tag = f"[{ORIGINAL_AUDIO}]"
         outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
-        format_specs = [
-            "bestaudio[ext=m4a]/bestaudio/best",
-        ]
+        format_spec = "bestaudio[ext=m4a]/bestaudio/best"
+
+    fast_profiles: tuple[list[str] | None, ...] = (
+        ["android_vr", "web"],
+        None,
+    )
 
     last_error: Exception | None = None
     saw_dns_error = False
 
-    for clients in ANDROID_CLIENT_PROFILES:
-        for idx, spec in enumerate(format_specs):
-            if cancel.is_set():
-                reporter.progress_done()
-                return DownloadResult("cancelled", output_dir)
+    for attempt_idx, clients in enumerate(fast_profiles):
+        if cancel.is_set():
+            reporter.progress_done()
+            return DownloadResult("cancelled", output_dir)
 
-            tracker = ProgressTracker(reporter, expected_total=None, cancel=cancel)
-            opts = {
-                "quiet": True,
-                "noplaylist": True,
-                "format": spec,
-                "outtmpl": outtmpl,
-                "progress_hooks": [tracker],
-                "restrictfilenames": False,
-                "socket_timeout": 15,
-                "retries": 3,
-                "fragment_retries": 3,
-            }
-            if clients is not None:
-                opts["extractor_args"] = _android_extractor_args(clients)
-            if kind == "video" and idx < 2:
-                opts["format_sort"] = [f"res:{quality}", "proto", "vcodec:h264"]
-            elif kind == "audio":
-                opts["format_sort"] = ["abr", "proto"]
+        tracker = ProgressTracker(reporter, expected_total=None, cancel=cancel)
+        opts = {
+            "quiet": True,
+            "noplaylist": True,
+            "format": format_spec,
+            "outtmpl": outtmpl,
+            "progress_hooks": [tracker],
+            "restrictfilenames": False,
+            "socket_timeout": 8,
+            "retries": 1,
+            "fragment_retries": 1,
+        }
+        if clients is not None:
+            opts["extractor_args"] = _android_extractor_args(clients)
+        if kind == "video":
+            opts["format_sort"] = [f"res:{quality}", "proto", "vcodec:h264"]
+        else:
+            opts["format_sort"] = ["abr", "proto"]
 
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
-                reporter.progress_done()
-                return DownloadResult("completed", output_dir)
-            except DownloadCancelled:
-                reporter.progress_done()
-                return DownloadResult("cancelled", output_dir)
-            except Exception as error:
-                last_error = error
-                if _is_dns_or_network_error(error):
-                    saw_dns_error = True
-                    time.sleep(1.0)
-                    continue
-                msg = str(error).lower()
-                if (
-                    "requested format is not available" in msg
-                    or "no video formats found" in msg
-                    or "format is not available" in msg
-                    or "http error 403" in msg
-                    or "not a bot" in msg
-                    or "sign in" in msg
-                ):
-                    continue
-                reporter.progress_done()
-                raise DownloadError(friendly_error(error)) from error
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                if attempt_idx == 0 and info is not None:
+                    try:
+                        ydl.process_ie_result(copy.deepcopy(info), download=True)
+                        reporter.progress_done()
+                        return DownloadResult("completed", output_dir)
+                    except DownloadCancelled:
+                        raise
+                    except Exception:
+                        pass
+                ydl.download([url])
+            reporter.progress_done()
+            return DownloadResult("completed", output_dir)
+        except DownloadCancelled:
+            reporter.progress_done()
+            return DownloadResult("cancelled", output_dir)
+        except Exception as error:
+            last_error = error
+            if _is_dns_or_network_error(error):
+                saw_dns_error = True
+                continue
+            msg = str(error).lower()
+            if (
+                "requested format is not available" in msg
+                or "no video formats found" in msg
+                or "format is not available" in msg
+                or "http error 403" in msg
+                or "not a bot" in msg
+                or "sign in" in msg
+            ):
+                continue
+            reporter.progress_done()
+            raise DownloadError(friendly_error(error)) from error
 
     reporter.progress_done()
     if saw_dns_error:
@@ -1339,9 +1349,6 @@ class YTDownloaderApp(toga.App):
             else:
                 labels.append("Original audio (M4A, no conversion)")
                 values.append(ORIGINAL_AUDIO)
-                for choice in AUDIO_CHOICES:
-                    labels.append(f"{audio_label(choice)} (Direct M4A, no re-encode)")
-                    values.append(choice)
             saved = settings.get("audio_bitrate")
 
         self.quality_values = values
@@ -1394,7 +1401,13 @@ class YTDownloaderApp(toga.App):
                 )
             else:
                 result = _android_download_media(
-                    url, kind, setting, self.download_dir, reporter, cancel
+                    url,
+                    kind,
+                    setting,
+                    self.download_dir,
+                    reporter,
+                    cancel,
+                    info=info,
                 )
         except DownloadError as error:
             self.call_on_ui(self.on_download_failed, str(error))
