@@ -12,6 +12,7 @@ permissions:
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -23,10 +24,20 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Java 17 (required by Briefcase & Gradle)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: "temurin"
           java-version: "17"
+
+      - name: Cache Gradle packages and wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'android/**') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Install Briefcase
         run: |

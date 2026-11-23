@@ -26,12 +26,14 @@ requires = [
 requires = [
     "toga-android>=0.5.0",
 ]
-permission."android.permission.INTERNET" = {}
-permission."android.permission.ACCESS_NETWORK_STATE" = {}
-permission."android.permission.READ_EXTERNAL_STORAGE" = { max_sdk_version = "32" }
-permission."android.permission.WRITE_EXTERNAL_STORAGE" = { max_sdk_version = "29" }
-permission."android.permission.MANAGE_EXTERNAL_STORAGE" = {}
 android_abis = ["arm64-v8a"]
+
+[tool.briefcase.app.ytdownloader.android.permission]
+"android.permission.INTERNET" = {}
+"android.permission.ACCESS_NETWORK_STATE" = {}
+"android.permission.READ_EXTERNAL_STORAGE" = { max_sdk_version = "32" }
+"android.permission.WRITE_EXTERNAL_STORAGE" = { max_sdk_version = "29" }
+"android.permission.MANAGE_EXTERNAL_STORAGE" = {}
 
 [tool.briefcase.app.ytdownloader.windows]
 requires = [
@@ -42,32 +44,3 @@ requires = [
 requires = [
     "toga-gtk>=0.5.0",
 ]
-jobs:
-  build-android:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Set up Java 17 (required by Briefcase & Gradle)
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "17"
-
-      - name: Cache Gradle packages and wrapper
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'android/**') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
