@@ -11,6 +11,7 @@ author = "Cptmaverick-22"
 formal_name = "YT Downloader"
 description = "Simple YouTube video and audio downloader"
 long_description = "Download YouTube videos and audio cleanly on Android and desktop."
+icon = "android/icons/icon"
 sources = [
     "android/ytdownloader",
     "config.py",

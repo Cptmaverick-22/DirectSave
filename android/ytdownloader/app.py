@@ -44,7 +44,7 @@ from downloader import (
 )
 from logs import setup_logging
 from ytdownloader.storage import (
-    android_preset_dirs,
+    ANDROID_INTERNAL_ROOT,
     configure_mobile_paths,
     friendly_path,
     is_android,
@@ -127,10 +127,6 @@ THEMES = {
     },
 }
 
-
-# --------------------------------------------------------------------------
-# Typography & native rounded-corner helpers
-# --------------------------------------------------------------------------
 
 def _resolve_ui_font() -> str:
     """Use Inter if bundled or installed, else fall back to a clean system UI font."""
@@ -325,10 +321,6 @@ class _NativeStyler:
             pass
 
 
-# --------------------------------------------------------------------------
-# Core downloader bridge
-# --------------------------------------------------------------------------
-
 class TogaReporter(Reporter):
     """Forwards downloader.py events safely to Toga's main UI thread."""
 
@@ -400,7 +392,7 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
     return fallback_url
 
 
-def _android_single_stream_download(
+def _android_download_media(
     url: str,
     kind: str,
     setting,
@@ -408,25 +400,26 @@ def _android_single_stream_download(
     reporter: Reporter,
     cancel: threading.Event,
 ) -> DownloadResult:
-    """Download a single muxed video or audio stream without needing FFmpeg."""
+    """Download playable media on Android without requiring an external ffmpeg binary."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if kind == "video":
         quality = int(setting)
         tag = f"[{quality}p]"
         outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
-        # Single-file progressive/muxed formats only so yt-dlp never invokes ffmpeg.
+        # Prefer muxed/progressive streams at or below requested height so no merge step fails.
         format_specs = [
-            f"b[ext=mp4][height={quality}][acodec!=none][vcodec!=none]",
-            f"b[ext=mp4][height<={quality}][acodec!=none][vcodec!=none]",
-            f"b[height<={quality}][acodec!=none][vcodec!=none]",
-            "b[ext=mp4][acodec!=none][vcodec!=none]/b[acodec!=none][vcodec!=none]/b",
+            f"best[ext=mp4][height<={quality}][acodec!=none][vcodec!=none]",
+            f"best[height<={quality}][acodec!=none][vcodec!=none]",
+            "best[ext=mp4][acodec!=none][vcodec!=none]",
+            "best[acodec!=none][vcodec!=none]",
+            "best",
         ]
     else:
         tag = f"[{setting}]" if setting == ORIGINAL_AUDIO else f"[{setting}kbps]"
         outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
         format_specs = [
-            "ba[ext=m4a]/ba/b",
+            "bestaudio[ext=m4a]/bestaudio/best",
         ]
 
     last_error: Exception | None = None
@@ -461,7 +454,11 @@ def _android_single_stream_download(
         except Exception as error:
             last_error = error
             msg = str(error).lower()
-            if "requested format is not available" in msg or "no video formats found" in msg:
+            if (
+                "requested format is not available" in msg
+                or "no video formats found" in msg
+                or "format is not available" in msg
+            ):
                 continue
             reporter.progress_done()
             raise DownloadError(friendly_error(error)) from error
@@ -470,8 +467,30 @@ def _android_single_stream_download(
     raise DownloadError(
         friendly_error(last_error)
         if last_error
-        else "No compatible single-file stream is available for this video."
+        else "No compatible stream is available for this video."
     )
+
+
+def _tree_uri_to_local_path(uri_str: str) -> Path | None:
+    """Convert an Android SAF document tree URI into a filesystem path when possible."""
+    try:
+        decoded = urllib.parse.unquote(uri_str)
+        if "/tree/" not in decoded:
+            return None
+        tree_part = decoded.split("/tree/", 1)[1].split("/", 1)[0]
+        if ":" not in tree_part:
+            return None
+        volume, rel = tree_part.split(":", 1)
+        if volume.lower() == "primary":
+            rel_clean = rel.strip("/")
+            return (
+                ANDROID_INTERNAL_ROOT / rel_clean
+                if rel_clean
+                else ANDROID_INTERNAL_ROOT
+            )
+    except Exception:
+        return None
+    return None
 
 
 def _make_card(inner_box: toga.Box) -> toga.Box:
@@ -481,10 +500,6 @@ def _make_card(inner_box: toga.Box) -> toga.Box:
     card.add(inner_box)
     return card
 
-
-# --------------------------------------------------------------------------
-# Main Application
-# --------------------------------------------------------------------------
 
 class YTDownloaderApp(toga.App):
     def startup(self):
@@ -498,9 +513,7 @@ class YTDownloaderApp(toga.App):
         saved_theme = load_settings().get("mobile_theme")
         self.theme_name = saved_theme if saved_theme in THEMES else "obsidian"
         self._status_level = "info"
-        self._editing_folder = False
 
-        # Android does not bundle ffmpeg, so use single-stream downloads on Android.
         self.use_ffmpeg = bool(shutil.which("ffmpeg")) and not is_android()
         self.state = "idle"  # idle, fetching, ready, downloading, done
         self.mode = "video"  # "video" or "audio"
@@ -524,12 +537,8 @@ class YTDownloaderApp(toga.App):
         self._refresh_responsive_text()
         self.main_window.show()
 
-    # ----- thread-safe UI dispatch ----------------------------------------
-
     def call_on_ui(self, func, *args):
         self.loop.call_soon_threadsafe(func, *args)
-
-    # ----- responsive text sizing -----------------------------------------
 
     def on_window_resize(self, window, **kwargs):
         width = getattr(window.size, "width", 0)
@@ -547,8 +556,6 @@ class YTDownloaderApp(toga.App):
             self.title_label.text = (
                 title if len(title) <= max_title else f"{title[: max_title - 1]}…"
             )
-
-    # ----- layout ---------------------------------------------------------
 
     def _build_ui(self):
         f = self.ui_font
@@ -728,7 +735,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.options_card)
         self._card_inners.extend([options_inner, mode_row])
 
-        # 5. Save Location card (wide Change button so text never clips)
+        # 5. Save Location card (clean button sizing & native folder picker)
         save_caption = toga.Label(
             "SAVE LOCATION",
             style=Pack(font_family=f, flex=1, font_size=9, font_weight=BOLD),
@@ -740,7 +747,7 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_change_folder,
             style=Pack(
                 font_family=f,
-                width=116,
+                width=120,
                 height=34,
                 font_size=10,
                 font_weight=BOLD,
@@ -756,54 +763,16 @@ class YTDownloaderApp(toga.App):
 
         self.folder_label = toga.Label(
             _format_responsive_path(self.download_dir, self._current_width),
-            style=Pack(font_family=f, font_size=11),
+            style=Pack(font_family=f, font_size=11, flex=1),
         )
         self._primary_labels.append(self.folder_label)
-
-        # Inline picker/path panel when Change is tapped on Android or fallback
-        self.folder_input = toga.TextInput(
-            value=str(self.download_dir),
-            placeholder="/storage/emulated/0/Download/YT Downloader",
-            style=Pack(font_family=f, font_size=11, height=38),
-        )
-        self.save_path_btn = toga.Button(
-            "Use Folder",
-            on_press=self.on_save_manual_folder,
-            style=Pack(
-                font_family=f,
-                flex=1,
-                height=36,
-                font_size=10,
-                font_weight=BOLD,
-            ),
-        )
-
-        preset_row = toga.Box(style=Pack(direction=ROW, gap=8))
-        for preset_name, preset_path in android_preset_dirs():
-            btn = toga.Button(
-                preset_name,
-                on_press=lambda _w, p=preset_path: self._apply_preset_folder(p),
-                style=Pack(font_family=f, flex=1, height=34, font_size=10),
-            )
-            self._secondary_buttons.append(btn)
-            preset_row.add(btn)
-
-        self.folder_editor_box = toga.Box(
-            style=Pack(direction=COLUMN, gap=8, margin_top=6)
-        )
-        if is_android():
-            self.folder_editor_box.add(preset_row)
-        self.folder_editor_box.add(self.folder_input)
-        self.folder_editor_box.add(self.save_path_btn)
 
         self.folder_inner = toga.Box(style=Pack(direction=COLUMN, gap=6))
         self.folder_inner.add(save_header_row)
         self.folder_inner.add(self.folder_label)
         self.folder_card = _make_card(self.folder_inner)
         self._cards.append(self.folder_card)
-        self._card_inners.extend(
-            [self.folder_inner, save_header_row, self.folder_editor_box, preset_row]
-        )
+        self._card_inners.extend([self.folder_inner, save_header_row])
 
         # 6. Primary Download CTA
         self.download_button = toga.Button(
@@ -866,7 +835,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.progress_card)
         self._card_inners.extend([progress_inner, progress_top])
 
-        # 8. Status banner card (wraps cleanly across lines on narrow screens)
+        # 8. Status banner card (wraps cleanly across lines)
         self.status_label = toga.Label(
             "",
             style=Pack(font_family=f, font_size=11, font_weight=BOLD, flex=1),
@@ -875,7 +844,7 @@ class YTDownloaderApp(toga.App):
         status_inner.add(self.status_label)
         self.status_card = _make_card(status_inner)
         self._cards.append(self.status_card)
-        self._card_inners.extend([status_inner])
+        self._card_inners.append(status_inner)
 
         # Responsive vertical container inside ScrollContainer
         self.content_box = toga.Box(
@@ -887,8 +856,6 @@ class YTDownloaderApp(toga.App):
         self.root_scroll = toga.ScrollContainer(
             content=self.content_box, horizontal=False
         )
-
-    # ----- theme ----------------------------------------------------------
 
     def on_cycle_theme(self, widget):
         idx = THEME_ORDER.index(self.theme_name)
@@ -930,16 +897,11 @@ class YTDownloaderApp(toga.App):
                 btn, t["secondary_bg"], t["border"], radius=10, is_button=True
             )
 
-        for inp in (self.url_input, self.folder_input):
-            inp.style.background_color = t["input_bg"]
-            inp.style.color = t["text"]
-            self.styler.style_input(inp)
+        self.url_input.style.background_color = t["input_bg"]
+        self.url_input.style.color = t["text"]
+        self.styler.style_input(self.url_input)
 
-        for accent_btn in (
-            self.fetch_button,
-            self.download_button,
-            self.save_path_btn,
-        ):
+        for accent_btn in (self.fetch_button, self.download_button):
             accent_btn.style.background_color = t["accent"]
             accent_btn.style.color = t["accent_text"]
             self.styler.apply(
@@ -987,15 +949,46 @@ class YTDownloaderApp(toga.App):
         self.audio_mode_btn.style.color = a_fg
         self.styler.apply(self.audio_mode_btn, a_bg, a_bd, radius=10, is_button=True)
 
-    # ----- folder selection -----------------------------------------------
-
     async def on_change_folder(self, widget):
         if self.state in ("fetching", "downloading"):
             return
 
         if is_android():
-            self._toggle_folder_editor()
-            return
+            try:
+                from android.content import Intent
+
+                intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                intent.addFlags(
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+
+                def _on_tree_result(result_code, data):
+                    # Activity.RESULT_OK == -1
+                    if result_code != -1 or data is None:
+                        return
+                    uri = data.getData()
+                    if uri is None:
+                        return
+                    mapped = _tree_uri_to_local_path(uri.toString())
+                    if mapped is None:
+                        self.call_on_ui(
+                            self.show_status,
+                            "Picked folder is not a local path. Choose Download/YT Downloader.",
+                            "warning",
+                        )
+                        return
+                    target = (
+                        mapped
+                        if mapped.name == APP_NAME
+                        else mapped / APP_NAME
+                    )
+                    self.call_on_ui(self._commit_download_folder, target)
+
+                self._impl.start_activity(intent, on_complete=_on_tree_result)
+                return
+            except Exception:
+                pass
 
         try:
             dialog = toga.SelectFolderDialog(
@@ -1004,27 +997,14 @@ class YTDownloaderApp(toga.App):
             )
             chosen = await self.main_window.dialog(dialog)
         except NotImplementedError:
-            self._toggle_folder_editor()
+            self.show_status(
+                "Folder picker is unavailable here; using Download/YT Downloader.",
+                "warning",
+            )
             return
 
         if chosen:
             self._commit_download_folder(chosen)
-
-    def _toggle_folder_editor(self):
-        self._editing_folder = not self._editing_folder
-        if self._editing_folder:
-            self.folder_input.value = str(self.download_dir)
-            if self.folder_editor_box not in self.folder_inner.children:
-                self.folder_inner.add(self.folder_editor_box)
-        elif self.folder_editor_box in self.folder_inner.children:
-            self.folder_inner.remove(self.folder_editor_box)
-
-    def _apply_preset_folder(self, path: Path):
-        self.folder_input.value = str(path)
-        self._commit_download_folder(path)
-
-    def on_save_manual_folder(self, widget):
-        self._commit_download_folder(self.folder_input.value or "")
 
     def _commit_download_folder(self, new_path: str | Path):
         try:
@@ -1035,14 +1015,9 @@ class YTDownloaderApp(toga.App):
 
         self.download_dir = folder
         self._refresh_responsive_text()
-        if self._editing_folder:
-            self._toggle_folder_editor()
         self.show_status("Save folder updated.", "success")
 
-    # ----- state & visibility ---------------------------------------------
-
     def _rebuild_visible_sections(self):
-        """Show only active cards so hidden sections take zero vertical space."""
         busy = self.state in ("fetching", "downloading")
         has_media = self.state in ("ready", "downloading", "done")
         editable = self.state in ("ready", "done")
@@ -1101,8 +1076,6 @@ class YTDownloaderApp(toga.App):
         palette = THEMES[self.theme_name]["status"]
         self.status_label.style.color = palette.get(level, palette["info"])
         self._rebuild_visible_sections()
-
-    # ----- URL & Fetching -------------------------------------------------
 
     def on_url_edited(self, widget):
         if self.state in ("ready", "done"):
@@ -1190,8 +1163,6 @@ class YTDownloaderApp(toga.App):
         self.show_status(message, "error")
         self._set_state("idle")
 
-    # ----- Format & Quality -----------------------------------------------
-
     def on_select_video_mode(self, widget):
         if self.mode == "video":
             return
@@ -1227,9 +1198,14 @@ class YTDownloaderApp(toga.App):
             saved = settings.get("video_quality")
         else:
             self.quality_caption.text = "AUDIO QUALITY"
-            choices = AUDIO_CHOICES if self.use_ffmpeg else [ORIGINAL_AUDIO]
+            choices = list(AUDIO_CHOICES) + (
+                [ORIGINAL_AUDIO] if ORIGINAL_AUDIO not in AUDIO_CHOICES else []
+            )
             for choice in choices:
-                labels.append(audio_label(choice))
+                label = audio_label(choice)
+                if not self.use_ffmpeg and choice != ORIGINAL_AUDIO:
+                    label = f"{label} (M4A stream)"
+                labels.append(label)
                 values.append(choice)
             saved = settings.get("audio_bitrate")
 
@@ -1242,8 +1218,6 @@ class YTDownloaderApp(toga.App):
             self.quality_selection.value = labels[0]
 
         self.download_button.enabled = bool(values)
-
-    # ----- Downloading ----------------------------------------------------
 
     def on_download_pressed(self, widget):
         if self.state not in ("ready", "done") or not self.quality_values:
@@ -1284,7 +1258,7 @@ class YTDownloaderApp(toga.App):
                     cancel=cancel,
                 )
             else:
-                result = _android_single_stream_download(
+                result = _android_download_media(
                     url, kind, setting, self.download_dir, reporter, cancel
                 )
         except DownloadError as error:

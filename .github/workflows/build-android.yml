@@ -39,19 +39,37 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: Install Briefcase
+      - name: Install Briefcase and Pillow
         run: |
           python -m pip install --upgrade pip
-          python -m pip install briefcase
+          python -m pip install briefcase pillow
+
+      - name: Generate Android launcher icon sizes
+        run: |
+          python -c '
+          from pathlib import Path
+          from PIL import Image
+
+          src = Path("android/ytdownloader/resources/icon.png")
+          out_dir = Path("android/icons")
+          out_dir.mkdir(parents=True, exist_ok=True)
+          if src.is_file():
+              img = Image.open(src).convert("RGBA")
+              for size in (48, 72, 96, 144, 192):
+                  resized = img.resize((size, size), Image.Resampling.LANCZOS)
+                  resized.save(out_dir / f"icon-round-{size}.png")
+                  resized.save(out_dir / f"icon-square-{size}.png")
+                  resized.save(out_dir / f"icon-{size}.png")
+          '
 
       - name: Create Android project
         run: briefcase create android --no-input
 
       - name: Build Android project
-        run: briefcase build android --no-input
+        run: briefcase build android -r --no-input
 
       - name: Package installable APK
-        run: briefcase package android -p debug-apk --no-input
+        run: briefcase package android -p debug-apk -r --no-input
 
       - name: Rename APK for clarity
         run: |

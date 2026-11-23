@@ -1,5 +1,7 @@
 """Platform-safe storage paths for the Android / Toga interface."""
 
+from __future__ import annotations
+
 from pathlib import Path
 import sys
 
@@ -56,17 +58,22 @@ def set_mobile_download_dir(new_path: str | Path) -> Path:
         raise ValueError("Selected path is a file, not a folder.")
 
     try:
-        if not _is_writable_dir(target):
-            raise PermissionError(f"Cannot write to {target}.")
-    except PermissionError as exc:
+        writable = _is_writable_dir(target)
+    except OSError as exc:
+        writable = False
+        last_exc = exc
+    else:
+        last_exc = None
+
+    if not writable:
         if is_android() and str(target).startswith(str(ANDROID_INTERNAL_ROOT)):
             raise PermissionError(
-                "Android blocked writing there. Choose Download/YT Downloader "
-                "or enable All files access in App Settings."
-            ) from exc
+                "Android blocked writing to that folder. Pick Download/YT Downloader "
+                "or grant All files access in App Settings."
+            ) from last_exc
         raise PermissionError(
-            f"Cannot write to {target}. Check folder permissions."
-        ) from exc
+            "Cannot write to the selected folder. Choose another folder."
+        ) from last_exc
 
     config.remember_setting("download_dir", str(target))
     return target
@@ -87,15 +94,6 @@ def _resolve_default_download_dir(fallback_root: Path) -> Path:
                 return candidate
 
     return fallback_root / folder_name
-
-
-def android_preset_dirs() -> list[tuple[str, Path]]:
-    """Return reliable quick-pick folders for Android."""
-    folder_name = config.APP_NAME
-    return [
-        ("Download folder", ANDROID_INTERNAL_ROOT / "Download" / folder_name),
-        ("Internal root", ANDROID_INTERNAL_ROOT / folder_name),
-    ]
 
 
 def friendly_path(path: Path) -> str:
