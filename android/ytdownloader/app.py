@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 import shutil
 import sys
+import textwrap
 import threading
 import time
 import urllib.parse
@@ -135,6 +136,34 @@ ANDROID_CLIENT_PROFILES: tuple[list[str] | None, ...] = (
     ["android", "web"],
 )
 
+_STALE_FORMAT_KEYS = (
+    "requested_formats",
+    "requested_downloads",
+    "format",
+    "format_id",
+    "format_note",
+    "ext",
+    "url",
+    "filesize",
+    "filesize_approx",
+    "tbr",
+    "vbr",
+    "abr",
+    "asr",
+    "fps",
+    "width",
+    "height",
+    "resolution",
+    "vcodec",
+    "acodec",
+    "dynamic_range",
+    "protocol",
+    "container",
+    "language",
+    "http_headers",
+    "fragments",
+)
+
 _DNS_ERROR_MARKERS = (
     "errno 7",
     "[errno 7]",
@@ -151,6 +180,14 @@ def _is_dns_or_network_error(error: Exception) -> bool:
     return any(marker in text for marker in _DNS_ERROR_MARKERS)
 
 
+def _strip_stale_format_keys(info: dict) -> dict:
+    """Return a copy of yt-dlp info without earlier format selection keys."""
+    clean = copy.deepcopy(info)
+    for key in _STALE_FORMAT_KEYS:
+        clean.pop(key, None)
+    return clean
+
+
 def _android_extractor_args(clients: list[str] | None = None) -> dict:
     """Return YouTube extractor args for a given client list."""
     selected = clients or ["android_vr", "web"]
@@ -161,8 +198,39 @@ def _android_extractor_args(clients: list[str] | None = None) -> dict:
     }
 
 
+def _android_screen_width_dp(widget) -> int | None:
+    """Read the real Android screen width in dp from DisplayMetrics."""
+    if not is_android():
+        return None
+    try:
+        dm = widget._impl.native.getContext().getResources().getDisplayMetrics()
+        if dm.density and dm.widthPixels:
+            return int(dm.widthPixels / dm.density)
+    except Exception:
+        pass
+    return None
+
+
+def _wrap_text(text: str, available_dp: int, char_dp: float = 8.4) -> str:
+    """Insert explicit newlines so Toga Labels never clip past the card edge."""
+    if not text:
+        return ""
+    inner_dp = max(180, available_dp - 72)
+    max_chars = max(22, int(inner_dp / char_dp))
+    wrapped = [
+        textwrap.fill(
+            para,
+            width=max_chars,
+            break_long_words=True,
+            break_on_hyphens=True,
+        )
+        for para in text.splitlines()
+    ]
+    return "\n".join(wrapped)
+
+
 def _enable_android_multiline(label_widget: toga.Label, max_lines: int = 12):
-    """Force Android TextView labels to wrap vertically without horizontal clipping."""
+    """Allow Android TextView labels to render multi-line wrapped text cleanly."""
     if not is_android():
         return
     try:
@@ -209,7 +277,7 @@ def _resolve_ui_font() -> str:
 def _format_responsive_path(path: Path, available_px: int) -> str:
     """Show full path when space allows; shorten at folder boundaries when narrow."""
     text = friendly_path(path)
-    max_chars = max(24, int((available_px - 68) / 7.5))
+    max_chars = max(24, int((available_px - 72) / 8.0))
     if len(text) <= max_chars:
         return text
 
@@ -439,6 +507,96 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
     return fallback_url
 
 
+def _android_mux_mp4(video_path: Path, audio_path: Path, output_path: Path) -> None:
+    """Merge separate MP4 video and M4A audio using Android's native MediaMuxer."""
+    from android.media import MediaCodec, MediaExtractor, MediaFormat, MediaMuxer
+    from java.nio import ByteBuffer
+
+    v_ext = MediaExtractor()
+    a_ext = MediaExtractor()
+    muxer = None
+    started = False
+
+    try:
+        v_ext.setDataSource(str(video_path))
+        v_src_track = -1
+        v_format = None
+        for i in range(v_ext.getTrackCount()):
+            fmt = v_ext.getTrackFormat(i)
+            mime = fmt.getString(MediaFormat.KEY_MIME) or ""
+            if mime.startswith("video/"):
+                v_src_track = i
+                v_format = fmt
+                break
+        if v_src_track < 0 or v_format is None:
+            raise RuntimeError("No video track found in downloaded stream.")
+        v_ext.selectTrack(v_src_track)
+
+        a_ext.setDataSource(str(audio_path))
+        a_src_track = -1
+        a_format = None
+        for i in range(a_ext.getTrackCount()):
+            fmt = a_ext.getTrackFormat(i)
+            mime = fmt.getString(MediaFormat.KEY_MIME) or ""
+            if mime.startswith("audio/"):
+                a_src_track = i
+                a_format = fmt
+                break
+        if a_src_track < 0 or a_format is None:
+            raise RuntimeError("No audio track found in downloaded stream.")
+        a_ext.selectTrack(a_src_track)
+
+        muxer = MediaMuxer(
+            str(output_path), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+        )
+        v_dst_track = muxer.addTrack(v_format)
+        a_dst_track = muxer.addTrack(a_format)
+        muxer.start()
+        started = True
+
+        buf = ByteBuffer.allocateDirect(1024 * 1024)
+        buf_info = MediaCodec.BufferInfo()
+        sync_flag = MediaExtractor.SAMPLE_FLAG_SYNC
+        key_flag = MediaCodec.BUFFER_FLAG_KEY_FRAME
+
+        def _copy_track(extractor, dst_track):
+            while True:
+                buf.clear()
+                sample_size = extractor.readSampleData(buf, 0)
+                if sample_size < 0:
+                    break
+                buf_info.offset = 0
+                buf_info.size = sample_size
+                buf_info.presentationTimeUs = extractor.getSampleTime()
+                buf_info.flags = (
+                    key_flag if (extractor.getSampleFlags() & sync_flag) else 0
+                )
+                muxer.writeSampleData(dst_track, buf, buf_info)
+                extractor.advance()
+
+        _copy_track(v_ext, v_dst_track)
+        _copy_track(a_ext, a_dst_track)
+    finally:
+        if muxer is not None:
+            if started:
+                try:
+                    muxer.stop()
+                except Exception:
+                    pass
+            try:
+                muxer.release()
+            except Exception:
+                pass
+        try:
+            v_ext.release()
+        except Exception:
+            pass
+        try:
+            a_ext.release()
+        except Exception:
+            pass
+
+
 def _android_fetch_info(url: str) -> dict:
     """Extract video info on Android, rotating client profiles on failure."""
     last_error: Exception | None = None
@@ -496,81 +654,60 @@ def _android_fetch_info(url: str) -> dict:
     )
 
 
-def _android_download_media(
+def _download_single_stream(
     url: str,
-    kind: str,
-    setting,
-    output_dir: Path,
+    format_spec: str,
+    format_sort: list[str],
+    outtmpl: str,
     reporter: Reporter,
     cancel: threading.Event,
     info: dict | None = None,
-) -> DownloadResult:
-    """Download playable media on Android quickly, reusing fetched info first."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    if kind == "video":
-        quality = int(setting)
-        tag = f"[{quality}p]"
-        outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
-        format_spec = (
-            f"best[ext=mp4][height<={quality}][acodec!=none][vcodec!=none]"
-            f"/best[height<={quality}][acodec!=none][vcodec!=none]"
-            "/best[ext=mp4]/best"
-        )
-    else:
-        tag = f"[{ORIGINAL_AUDIO}]"
-        outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
-        format_spec = "bestaudio[ext=m4a]/bestaudio/best"
-
-    fast_profiles: tuple[list[str] | None, ...] = (
-        ["android_vr", "web"],
+) -> None:
+    """Download one exact stream, reusing fetched info first for instant start."""
+    profiles: tuple[list[str] | None, ...] = (
         None,
+        ["android_vr", "web"],
     )
-
     last_error: Exception | None = None
     saw_dns_error = False
 
-    for attempt_idx, clients in enumerate(fast_profiles):
+    for attempt_idx, clients in enumerate(profiles):
         if cancel.is_set():
-            reporter.progress_done()
-            return DownloadResult("cancelled", output_dir)
+            raise DownloadCancelled()
 
         tracker = ProgressTracker(reporter, expected_total=None, cancel=cancel)
         opts = {
             "quiet": True,
             "noplaylist": True,
             "format": format_spec,
+            "format_sort": format_sort,
             "outtmpl": outtmpl,
+            "overwrites": True,
             "progress_hooks": [tracker],
             "restrictfilenames": False,
-            "socket_timeout": 8,
-            "retries": 1,
-            "fragment_retries": 1,
+            "socket_timeout": 10,
+            "retries": 2,
+            "fragment_retries": 2,
         }
         if clients is not None:
             opts["extractor_args"] = _android_extractor_args(clients)
-        if kind == "video":
-            opts["format_sort"] = [f"res:{quality}", "proto", "vcodec:h264"]
-        else:
-            opts["format_sort"] = ["abr", "proto"]
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 if attempt_idx == 0 and info is not None:
                     try:
-                        ydl.process_ie_result(copy.deepcopy(info), download=True)
-                        reporter.progress_done()
-                        return DownloadResult("completed", output_dir)
+                        ydl.process_ie_result(
+                            _strip_stale_format_keys(info), download=True
+                        )
+                        return
                     except DownloadCancelled:
                         raise
                     except Exception:
                         pass
                 ydl.download([url])
-            reporter.progress_done()
-            return DownloadResult("completed", output_dir)
+            return
         except DownloadCancelled:
-            reporter.progress_done()
-            return DownloadResult("cancelled", output_dir)
+            raise
         except Exception as error:
             last_error = error
             if _is_dns_or_network_error(error):
@@ -586,10 +723,8 @@ def _android_download_media(
                 or "sign in" in msg
             ):
                 continue
-            reporter.progress_done()
             raise DownloadError(friendly_error(error)) from error
 
-    reporter.progress_done()
     if saw_dns_error:
         raise DownloadError(
             "Android DNS error (Errno 7): no address associated with hostname. "
@@ -600,6 +735,111 @@ def _android_download_media(
         if last_error
         else "No compatible stream is available for this video."
     )
+
+
+def _android_download_media(
+    url: str,
+    kind: str,
+    setting,
+    output_dir: Path,
+    reporter: Reporter,
+    cancel: threading.Event,
+    info: dict | None = None,
+) -> DownloadResult:
+    """Download the exact selected video quality (muxed via Android MediaMuxer) or M4A audio."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    vid = (info or {}).get("id") or str(int(time.time()))
+    raw_title = (info or {}).get("title") or vid
+    safe_title = (
+        yt_dlp.utils.sanitize_filename(raw_title, restricted=False).strip()[:90]
+        or vid
+    )
+
+    if kind == "audio":
+        outtmpl = str(output_dir / f"{safe_title} [{ORIGINAL_AUDIO}] [{vid}].%(ext)s")
+        try:
+            _download_single_stream(
+                url=url,
+                format_spec="bestaudio[ext=m4a]/bestaudio/best",
+                format_sort=["abr", "proto"],
+                outtmpl=outtmpl,
+                reporter=reporter,
+                cancel=cancel,
+                info=info,
+            )
+            reporter.progress_done()
+            return DownloadResult("completed", output_dir)
+        except DownloadCancelled:
+            reporter.progress_done()
+            return DownloadResult("cancelled", output_dir)
+
+    # Video: download the exact requested resolution + M4A audio, then mux natively
+    quality = int(setting)
+    final_path = output_dir / f"{safe_title} [{quality}p] [{vid}].mp4"
+    if final_path.is_file() and final_path.stat().st_size > 0:
+        reporter.progress_done()
+        return DownloadResult("exists", output_dir, final_path.name)
+
+    tmp_video = output_dir / f".ytdl_v_{vid}_{quality}p.mp4"
+    tmp_audio = output_dir / f".ytdl_a_{vid}_{quality}p.m4a"
+
+    try:
+        reporter.stage(f"Downloading {quality}p video…")
+        video_spec = (
+            f"bestvideo[ext=mp4][height={quality}]"
+            f"/bestvideo[ext=mp4][height<={quality}]"
+            f"/best[ext=mp4][height<={quality}]"
+        )
+        _download_single_stream(
+            url=url,
+            format_spec=video_spec,
+            format_sort=[f"res:{quality}", "proto", "vcodec:h264"],
+            outtmpl=str(tmp_video),
+            reporter=reporter,
+            cancel=cancel,
+            info=info,
+        )
+
+        if cancel.is_set():
+            raise DownloadCancelled()
+
+        reporter.stage("Downloading audio track…")
+        _download_single_stream(
+            url=url,
+            format_spec="bestaudio[ext=m4a]/bestaudio",
+            format_sort=["abr", "proto"],
+            outtmpl=str(tmp_audio),
+            reporter=reporter,
+            cancel=cancel,
+            info=info,
+        )
+
+        if cancel.is_set():
+            raise DownloadCancelled()
+
+        reporter.stage("Merging video and audio…")
+        try:
+            _android_mux_mp4(tmp_video, tmp_audio, final_path)
+        except Exception as mux_err:
+            logging.getLogger("ytdl").warning(
+                "Native Android mux failed for %sp: %s", quality, mux_err, exc_info=True
+            )
+            final_path.unlink(missing_ok=True)
+            raise DownloadError(
+                f"Could not merge {quality}p video on this device. "
+                "Try 1080p or lower (H.264 MP4)."
+            ) from mux_err
+
+        reporter.progress_done()
+        return DownloadResult("completed", output_dir, final_path.name)
+    except DownloadCancelled:
+        final_path.unlink(missing_ok=True)
+        reporter.progress_done()
+        return DownloadResult("cancelled", output_dir)
+    finally:
+        tmp_video.unlink(missing_ok=True)
+        tmp_audio.unlink(missing_ok=True)
 
 
 def _tree_uri_to_local_path(uri_str: str) -> Path | None:
@@ -639,11 +879,12 @@ class YTDownloaderApp(toga.App):
 
         self.ui_font = _resolve_ui_font()
         self.styler = _NativeStyler()
-        self._current_width = 430
+        self._current_width = 360
 
         saved_theme = load_settings().get("mobile_theme")
         self.theme_name = saved_theme if saved_theme in THEMES else "obsidian"
         self._status_level = "info"
+        self._raw_status_text = ""
 
         self.use_ffmpeg = bool(shutil.which("ffmpeg")) and not is_android()
         self.state = "idle"  # idle, fetching, ready, downloading, done
@@ -656,6 +897,10 @@ class YTDownloaderApp(toga.App):
         self.cancel_event: threading.Event | None = None
 
         self._build_ui()
+
+        detected_dp = _android_screen_width_dp(self.status_label)
+        if detected_dp:
+            self._current_width = detected_dp
 
         self.main_window = toga.MainWindow(
             title=f"{APP_NAME} v{APP_VERSION}",
@@ -672,7 +917,8 @@ class YTDownloaderApp(toga.App):
         self.loop.call_soon_threadsafe(func, *args)
 
     def on_window_resize(self, window, **kwargs):
-        width = getattr(window.size, "width", 0)
+        detected_dp = _android_screen_width_dp(self.status_label)
+        width = detected_dp or getattr(window.size, "width", 0)
         if width and width != self._current_width:
             self._current_width = width
             self._refresh_responsive_text()
@@ -682,11 +928,16 @@ class YTDownloaderApp(toga.App):
             self.download_dir, self._current_width
         )
         if self.summary is not None:
-            title = self.summary.title
-            max_title = max(36, int((self._current_width - 68) / 7.2) * 2)
-            self.title_label.text = (
-                title if len(title) <= max_title else f"{title[: max_title - 1]}…"
+            self.title_label.text = _wrap_text(
+                self.summary.title, self._current_width, char_dp=9.2
             )
+            self.title_label.refresh()
+        if self._raw_status_text:
+            self.status_label.text = _wrap_text(
+                self._raw_status_text, self._current_width, char_dp=8.4
+            )
+            self.status_label.refresh()
+        self.content_box.refresh()
 
     def _build_ui(self):
         f = self.ui_font
@@ -801,7 +1052,7 @@ class YTDownloaderApp(toga.App):
             "",
             style=Pack(font_family=f, font_size=10),
         )
-        _enable_android_multiline(self.title_label, max_lines=3)
+        _enable_android_multiline(self.title_label, max_lines=4)
         _enable_android_multiline(self.meta_label, max_lines=2)
         self._primary_labels.append(self.title_label)
         self._muted_labels.append(self.meta_label)
@@ -970,7 +1221,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.progress_card)
         self._card_inners.extend([progress_inner, progress_top])
 
-        # 8. Status banner card (wraps across multiple lines in portrait mode)
+        # 8. Status banner card (explicitly wrapped with newlines for portrait mode)
         self.status_label = toga.Label(
             "",
             style=Pack(font_family=f, font_size=11, font_weight=BOLD),
@@ -1167,7 +1418,7 @@ class YTDownloaderApp(toga.App):
             desired.append(self.download_button)
         if busy:
             desired.append(self.progress_card)
-        if self.status_label.text:
+        if self._raw_status_text:
             desired.append(self.status_card)
 
         for child in list(self.content_box.children)[2:]:
@@ -1208,11 +1459,19 @@ class YTDownloaderApp(toga.App):
 
     def show_status(self, text: str, level: str = "info"):
         self._status_level = level
-        self.status_label.text = text
+        self._raw_status_text = text
+        detected_dp = _android_screen_width_dp(self.status_label)
+        if detected_dp:
+            self._current_width = detected_dp
+        self.status_label.text = _wrap_text(
+            text, self._current_width, char_dp=8.4
+        )
         palette = THEMES[self.theme_name]["status"]
         self.status_label.style.color = palette.get(level, palette["info"])
         _enable_android_multiline(self.status_label, max_lines=12)
+        self.status_label.refresh()
         self._rebuild_visible_sections()
+        self.content_box.refresh()
 
     def on_url_edited(self, widget):
         if self.state in ("ready", "done"):
@@ -1438,10 +1697,9 @@ class YTDownloaderApp(toga.App):
         self.progress_bar.max = None
         self.progress_bar.start()
         self.progress_label.text = ""
-        self.cancel_button.enabled = False
+        self.cancel_button.enabled = self.state == "downloading" and "Merging" not in text
 
     def on_progress(self, downloaded, total, speed, eta):
-        self.stage_label.text = "Downloading…"
         if total:
             pct = min(100, int(downloaded * 100 / total))
             self.percent_label.text = f"{pct}%"
