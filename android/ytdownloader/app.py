@@ -400,7 +400,7 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
     return fallback_url
 
 
-def _android_fallback_download(
+def _android_single_stream_download(
     url: str,
     kind: str,
     setting,
@@ -408,24 +408,25 @@ def _android_fallback_download(
     reporter: Reporter,
     cancel: threading.Event,
 ) -> DownloadResult:
-    """Download on Android without requiring an external ffmpeg binary."""
+    """Download a single muxed video or audio stream without needing FFmpeg."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if kind == "video":
         quality = int(setting)
         tag = f"[{quality}p]"
-        outtmpl = str(output_dir / f"%(title).100B {tag} [%(id)s].%(ext)s")
+        outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
+        # Single-file progressive/muxed formats only so yt-dlp never invokes ffmpeg.
         format_specs = [
-            f"bestvideo[ext=mp4][height={quality}]+bestaudio[ext=m4a]",
-            f"bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]",
-            f"best[ext=mp4][height<={quality}]",
-            "best[ext=mp4]/best",
+            f"b[ext=mp4][height={quality}][acodec!=none][vcodec!=none]",
+            f"b[ext=mp4][height<={quality}][acodec!=none][vcodec!=none]",
+            f"b[height<={quality}][acodec!=none][vcodec!=none]",
+            "b[ext=mp4][acodec!=none][vcodec!=none]/b[acodec!=none][vcodec!=none]/b",
         ]
     else:
         tag = f"[{setting}]" if setting == ORIGINAL_AUDIO else f"[{setting}kbps]"
-        outtmpl = str(output_dir / f"%(title).100B {tag} [%(id)s].%(ext)s")
+        outtmpl = str(output_dir / f"%(title).90B {tag} [%(id)s].%(ext)s")
         format_specs = [
-            "bestaudio[ext=m4a]/bestaudio/best",
+            "ba[ext=m4a]/ba/b",
         ]
 
     last_error: Exception | None = None
@@ -460,7 +461,6 @@ def _android_fallback_download(
         except Exception as error:
             last_error = error
             msg = str(error).lower()
-            # Retry with broader format if a specific resolution stream wasn't offered.
             if "requested format is not available" in msg or "no video formats found" in msg:
                 continue
             reporter.progress_done()
@@ -468,7 +468,9 @@ def _android_fallback_download(
 
     reporter.progress_done()
     raise DownloadError(
-        friendly_error(last_error) if last_error else "That quality isn't available for this video."
+        friendly_error(last_error)
+        if last_error
+        else "No compatible single-file stream is available for this video."
     )
 
 
@@ -498,7 +500,8 @@ class YTDownloaderApp(toga.App):
         self._status_level = "info"
         self._editing_folder = False
 
-        self.has_ffmpeg = bool(shutil.which("ffmpeg"))
+        # Android does not bundle ffmpeg, so use single-stream downloads on Android.
+        self.use_ffmpeg = bool(shutil.which("ffmpeg")) and not is_android()
         self.state = "idle"  # idle, fetching, ready, downloading, done
         self.mode = "video"  # "video" or "audio"
         self.url = ""
@@ -587,7 +590,7 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_cycle_theme,
             style=Pack(
                 font_family=f,
-                width=112,
+                width=116,
                 height=34,
                 font_size=10,
                 font_weight=BOLD,
@@ -625,7 +628,7 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_clear_pressed,
             style=Pack(
                 font_family=f,
-                width=86,
+                width=92,
                 height=40,
                 font_size=11,
                 font_weight=BOLD,
@@ -725,7 +728,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.options_card)
         self._card_inners.extend([options_inner, mode_row])
 
-        # 5. Save Location card (clean button sizing so "CHANGE" never clips)
+        # 5. Save Location card (wide Change button so text never clips)
         save_caption = toga.Label(
             "SAVE LOCATION",
             style=Pack(font_family=f, flex=1, font_size=9, font_weight=BOLD),
@@ -733,12 +736,12 @@ class YTDownloaderApp(toga.App):
         self._muted_labels.append(save_caption)
 
         self.change_folder_btn = toga.Button(
-            "Change…",
+            "Change",
             on_press=self.on_change_folder,
             style=Pack(
                 font_family=f,
-                width=102,
-                height=32,
+                width=116,
+                height=34,
                 font_size=10,
                 font_weight=BOLD,
             ),
@@ -757,14 +760,14 @@ class YTDownloaderApp(toga.App):
         )
         self._primary_labels.append(self.folder_label)
 
-        # Inline fallback path editor (used if native picker isn't available)
+        # Inline picker/path panel when Change is tapped on Android or fallback
         self.folder_input = toga.TextInput(
             value=str(self.download_dir),
-            placeholder="/storage/emulated/0/YT Downloader",
+            placeholder="/storage/emulated/0/Download/YT Downloader",
             style=Pack(font_family=f, font_size=11, height=38),
         )
         self.save_path_btn = toga.Button(
-            "Save Path",
+            "Use Folder",
             on_press=self.on_save_manual_folder,
             style=Pack(
                 font_family=f,
@@ -788,9 +791,9 @@ class YTDownloaderApp(toga.App):
         self.folder_editor_box = toga.Box(
             style=Pack(direction=COLUMN, gap=8, margin_top=6)
         )
-        self.folder_editor_box.add(self.folder_input)
         if is_android():
             self.folder_editor_box.add(preset_row)
+        self.folder_editor_box.add(self.folder_input)
         self.folder_editor_box.add(self.save_path_btn)
 
         self.folder_inner = toga.Box(style=Pack(direction=COLUMN, gap=6))
@@ -863,20 +866,20 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.progress_card)
         self._card_inners.extend([progress_inner, progress_top])
 
-        # 8. Status banner card
+        # 8. Status banner card (wraps cleanly across lines on narrow screens)
         self.status_label = toga.Label(
             "",
-            style=Pack(font_family=f, font_size=11, font_weight=BOLD),
+            style=Pack(font_family=f, font_size=11, font_weight=BOLD, flex=1),
         )
-        status_inner = toga.Box(style=Pack(direction=COLUMN))
+        status_inner = toga.Box(style=Pack(direction=ROW))
         status_inner.add(self.status_label)
         self.status_card = _make_card(status_inner)
         self._cards.append(self.status_card)
-        self._card_inners.append(status_inner)
+        self._card_inners.extend([status_inner])
 
         # Responsive vertical container inside ScrollContainer
         self.content_box = toga.Box(
-            style=Pack(direction=COLUMN, margin=(14, 14, 20, 14), gap=12)
+            style=Pack(direction=COLUMN, margin=(14, 14, 24, 14), gap=12)
         )
         self.content_box.add(self.header_box)
         self.content_box.add(self.url_card)
@@ -1224,7 +1227,7 @@ class YTDownloaderApp(toga.App):
             saved = settings.get("video_quality")
         else:
             self.quality_caption.text = "AUDIO QUALITY"
-            choices = AUDIO_CHOICES if self.has_ffmpeg else [ORIGINAL_AUDIO]
+            choices = AUDIO_CHOICES if self.use_ffmpeg else [ORIGINAL_AUDIO]
             for choice in choices:
                 labels.append(audio_label(choice))
                 values.append(choice)
@@ -1270,7 +1273,7 @@ class YTDownloaderApp(toga.App):
     def _download_worker(self, url, kind, setting, info, cancel):
         reporter = TogaReporter(self)
         try:
-            if self.has_ffmpeg:
+            if self.use_ffmpeg:
                 fn = download_video if kind == "video" else download_audio
                 result = fn(
                     url,
@@ -1281,7 +1284,7 @@ class YTDownloaderApp(toga.App):
                     cancel=cancel,
                 )
             else:
-                result = _android_fallback_download(
+                result = _android_single_stream_download(
                     url, kind, setting, self.download_dir, reporter, cancel
                 )
         except DownloadError as error:
