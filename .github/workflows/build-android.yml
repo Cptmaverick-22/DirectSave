@@ -69,7 +69,7 @@ jobs:
         run: briefcase build android -r --no-input
 
       - name: Package installable APK
-        run: briefcase package android -p debug-apk -r --no-input
+        run: briefcase package android -p debug-apk -u --no-input
 
       - name: Rename APK for clarity
         run: |
