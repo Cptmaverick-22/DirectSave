@@ -70,28 +70,63 @@ jobs:
       - name: Build Android project
         run: briefcase build android -r --no-input
 
-      - name: Package installable APK
-        run: briefcase package android -p debug-apk -u --no-input
+      - name: Package unsigned release APK
+        run: briefcase package android -p apk -u --no-input
 
-      - name: Rename APK for clarity
+      - name: Align and sign release APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
         run: |
+          set -euo pipefail
           mkdir -p release-apk
-          APK_FILE=$(find dist -maxdepth 2 -name "*.apk" | head -n 1)
-          if [ -z "$APK_FILE" ]; then
+
+          UNSIGNED_APK=$(find dist -maxdepth 3 -name "*.apk" | head -n 1)
+          if [ -z "$UNSIGNED_APK" ]; then
             echo "No APK found in dist/"
             exit 1
           fi
-          cp "$APK_FILE" "release-apk/YTDownloader-Android.apk"
+
+          # Locate Android SDK build-tools (runner preinstalled or Briefcase cache)
+          BUILD_TOOLS_DIR=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" "$HOME/.cache/briefcase/tools/android_sdk/build-tools" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$BUILD_TOOLS_DIR" ]; then
+            echo "Could not locate Android build-tools (zipalign/apksigner)."
+            exit 1
+          fi
+          echo "Using build-tools: $BUILD_TOOLS_DIR"
+
+          # Decode keystore from GitHub Secret
+          KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+
+          # Zipalign and sign with v2/v3 APK Signature Scheme
+          ALIGNED_APK="$RUNNER_TEMP/aligned.apk"
+          SIGNED_APK="release-apk/YTDownloader-Android.apk"
+
+          "$BUILD_TOOLS_DIR/zipalign" -f -v -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-pass "env:ANDROID_KEYSTORE_PASS" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --key-pass "env:ANDROID_KEY_PASS" \
+            --out "$SIGNED_APK" \
+            "$ALIGNED_APK"
+
+          # Verify signature and remove temporary keystore
+          "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$SIGNED_APK"
+          rm -f "$KEYSTORE_PATH" "$ALIGNED_APK"
           ls -lh release-apk/
 
-      - name: Upload APK artifact
+      - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: YTDownloader-Android-APK
           path: release-apk/YTDownloader-Android.apk
           retention-days: 14
 
-      - name: Attach APK to GitHub Release (on version tags)
+      - name: Attach signed APK to GitHub Release (on version tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
