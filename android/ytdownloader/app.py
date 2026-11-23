@@ -55,73 +55,54 @@ from ytdownloader.storage import (
 
 THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024
 
-THEME_ORDER = ("obsidian", "forest", "light")
+THEME_ORDER = ("obsidian", "light")
 
 THEMES = {
     "obsidian": {
         "label": "Obsidian",
-        "page_bg": "#121212",
-        "card_bg": "#1C1C1E",
-        "input_bg": "#242427",
-        "border": "#303036",
+        "toggle_text": "☀ Light",
+        "page_bg": "#0B0B0E",
+        "card_bg": "#16161A",
+        "input_bg": "#202026",
+        "border": "#2A2A32",
         "text": "#F5F5F7",
-        "muted": "#9E9EA7",
+        "muted": "#A1A1AA",
+        "hint": "#71717A",
         "accent": "#E11D48",
         "accent_border": "#FB7185",
         "accent_text": "#FFFFFF",
-        "secondary_bg": "#27272B",
-        "secondary_text": "#ECECEF",
+        "secondary_bg": "#23232B",
+        "secondary_text": "#F4F4F5",
         "danger_bg": "#33161C",
         "danger_border": "#7F1D1D",
         "danger_text": "#FB7185",
         "status": {
-            "info": "#9E9EA7",
+            "info": "#A1A1AA",
             "success": "#34D399",
             "warning": "#FBBF24",
             "error": "#FB7185",
         },
     },
-    "forest": {
-        "label": "Forest",
-        "page_bg": "#0F1412",
-        "card_bg": "#171F1B",
-        "input_bg": "#1F2A25",
-        "border": "#2C3B34",
-        "text": "#F2F7F4",
-        "muted": "#93A89E",
-        "accent": "#10B981",
-        "accent_border": "#34D399",
-        "accent_text": "#041C14",
-        "secondary_bg": "#222E28",
-        "secondary_text": "#E3EFE9",
-        "danger_bg": "#2E1518",
-        "danger_border": "#7F1D1D",
-        "danger_text": "#F87171",
-        "status": {
-            "info": "#93A89E",
-            "success": "#34D399",
-            "warning": "#FBBF24",
-            "error": "#F87171",
-        },
-    },
     "light": {
-        "label": "Warm Light",
-        "page_bg": "#F5F4F0",
+        "label": "Light",
+        "toggle_text": "☾ Obsidian",
+        "page_bg": "#F4F4F5",
         "card_bg": "#FFFFFF",
-        "input_bg": "#F2F1EC",
-        "border": "#DFDDD6",
+        "input_bg": "#F4F4F6",
+        "border": "#E4E4E7",
         "text": "#18181B",
-        "muted": "#6E6E77",
+        "muted": "#52525B",
+        "hint": "#A1A1AA",
         "accent": "#E11D48",
         "accent_border": "#BE123C",
         "accent_text": "#FFFFFF",
-        "secondary_bg": "#ECEBE6",
+        "secondary_bg": "#ECECF0",
         "secondary_text": "#18181B",
         "danger_bg": "#FEE2E2",
         "danger_border": "#FCA5A5",
         "danger_text": "#DC2626",
         "status": {
-            "info": "#6E6E77",
+            "info": "#52525B",
             "success": "#15803D",
             "warning": "#B45309",
             "error": "#DC2626",
@@ -424,16 +405,42 @@ class _NativeStyler:
             pass
 
     @staticmethod
-    def style_input(widget):
-        """Remove old 3D sunken borders from WinForms TextBox inputs."""
-        if sys.platform != "win32":
-            return
-        try:
-            import System.Windows.Forms as WinForms
+    def style_input(
+        widget,
+        bg_hex: str,
+        border_hex: str,
+        text_hex: str,
+        hint_hex: str,
+    ):
+        """Style text inputs cleanly on both Android and Windows."""
+        if is_android():
+            try:
+                from android.graphics import Color
+                from android.graphics.drawable import GradientDrawable
 
-            widget._impl.native.BorderStyle = WinForms.BorderStyle.FixedSingle
-        except Exception:
-            pass
+                native = widget._impl.native
+                density = native.getContext().getResources().getDisplayMetrics().density
+                drawable = GradientDrawable()
+                drawable.setColor(Color.parseColor(bg_hex))
+                drawable.setCornerRadius(10.0 * density)
+                drawable.setStroke(
+                    max(1, int(round(density))), Color.parseColor(border_hex)
+                )
+                native.setBackground(drawable)
+                native.setTextColor(Color.parseColor(text_hex))
+                native.setHintTextColor(Color.parseColor(hint_hex))
+                pad_h = int(12 * density)
+                pad_v = int(8 * density)
+                native.setPadding(pad_h, pad_v, pad_h, pad_v)
+            except Exception:
+                pass
+        elif sys.platform == "win32":
+            try:
+                import System.Windows.Forms as WinForms
+
+                widget._impl.native.BorderStyle = WinForms.BorderStyle.FixedSingle
+            except Exception:
+                pass
 
 
 class TogaReporter(Reporter):
@@ -774,7 +781,6 @@ def _android_download_media(
             reporter.progress_done()
             return DownloadResult("cancelled", output_dir)
 
-    # Video: download the exact requested resolution + M4A audio, then mux natively
     quality = int(setting)
     final_path = output_dir / f"{safe_title} [{quality}p] [{vid}].mp4"
     if final_path.is_file() and final_path.stat().st_size > 0:
@@ -893,7 +899,8 @@ class YTDownloaderApp(toga.App):
         self.info = None
         self.summary = None
         self.video_options: list[tuple[int, int | None]] = []
-        self.quality_values: list = []
+        self.quality_buttons: list[tuple[object, str, toga.Button]] = []
+        self.selected_quality = None
         self.cancel_event: threading.Event | None = None
 
         self._build_ui()
@@ -975,7 +982,7 @@ class YTDownloaderApp(toga.App):
         self.header_box.add(self.title_col)
 
         self.theme_button = toga.Button(
-            "Obsidian",
+            "☀ Light",
             on_press=self.on_cycle_theme,
             style=Pack(
                 font_family=f,
@@ -999,7 +1006,7 @@ class YTDownloaderApp(toga.App):
             placeholder="Paste a YouTube video link…",
             on_change=self.on_url_edited,
             on_confirm=self.on_fetch_pressed,
-            style=Pack(font_family=f, font_size=11, height=40),
+            style=Pack(font_family=f, font_size=11, height=42),
         )
         self.fetch_button = toga.Button(
             "Fetch Video",
@@ -1007,7 +1014,7 @@ class YTDownloaderApp(toga.App):
             style=Pack(
                 font_family=f,
                 flex=1,
-                height=40,
+                height=42,
                 font_size=11,
                 font_weight=BOLD,
             ),
@@ -1018,7 +1025,7 @@ class YTDownloaderApp(toga.App):
             style=Pack(
                 font_family=f,
                 width=92,
-                height=40,
+                height=42,
                 font_size=11,
                 font_weight=BOLD,
             ),
@@ -1057,7 +1064,7 @@ class YTDownloaderApp(toga.App):
         self._primary_labels.append(self.title_label)
         self._muted_labels.append(self.meta_label)
 
-        preview_inner = toga.Box(style=Pack(direction=COLUMN, gap=5))
+        preview_inner = toga.Box(style=Pack(direction=COLUMN, gap=6))
         preview_inner.add(thumb_wrap)
         preview_inner.add(self.title_label)
         preview_inner.add(self.meta_label)
@@ -1065,7 +1072,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.preview_card)
         self._card_inners.extend([preview_inner, thumb_wrap])
 
-        # 4. Format & Quality card
+        # 4. Format & Quality card (tappable high-contrast pill grid)
         format_caption = toga.Label(
             "FORMAT",
             style=Pack(font_family=f, font_size=9, font_weight=BOLD),
@@ -1078,18 +1085,18 @@ class YTDownloaderApp(toga.App):
             style=Pack(
                 font_family=f,
                 flex=1,
-                height=38,
+                height=40,
                 font_size=11,
                 font_weight=BOLD,
             ),
         )
         self.audio_mode_btn = toga.Button(
-            "Audio",
+            "Audio (M4A)",
             on_press=self.on_select_audio_mode,
             style=Pack(
                 font_family=f,
                 flex=1,
-                height=38,
+                height=40,
                 font_size=11,
                 font_weight=BOLD,
             ),
@@ -1100,24 +1107,27 @@ class YTDownloaderApp(toga.App):
 
         self.quality_caption = toga.Label(
             "VIDEO QUALITY",
-            style=Pack(font_family=f, font_size=9, font_weight=BOLD, margin_top=4),
+            style=Pack(font_family=f, font_size=9, font_weight=BOLD, margin_top=6),
         )
         self._muted_labels.append(self.quality_caption)
 
-        self.quality_selection = toga.Selection(
-            items=[],
-            style=Pack(font_family=f, font_size=11, height=40),
+        self.quality_grid = toga.Box(style=Pack(direction=COLUMN, gap=8))
+        self.quality_detail_label = toga.Label(
+            "",
+            style=Pack(font_family=f, font_size=10, margin_top=2),
         )
+        _enable_android_multiline(self.quality_detail_label, max_lines=2)
+        self._muted_labels.append(self.quality_detail_label)
 
         options_inner = toga.Box(style=Pack(direction=COLUMN, gap=8))
         options_inner.add(format_caption)
         options_inner.add(mode_row)
-        options_inner.add(toga.Divider(style=Pack(margin_top=2, margin_bottom=2)))
         options_inner.add(self.quality_caption)
-        options_inner.add(self.quality_selection)
+        options_inner.add(self.quality_grid)
+        options_inner.add(self.quality_detail_label)
         self.options_card = _make_card(options_inner)
         self._cards.append(self.options_card)
-        self._card_inners.extend([options_inner, mode_row])
+        self._card_inners.extend([options_inner, mode_row, self.quality_grid])
 
         # 5. Save Location card
         save_caption = toga.Label(
@@ -1131,7 +1141,7 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_change_folder,
             style=Pack(
                 font_family=f,
-                width=120,
+                width=110,
                 height=34,
                 font_size=10,
                 font_weight=BOLD,
@@ -1165,7 +1175,7 @@ class YTDownloaderApp(toga.App):
             on_press=self.on_download_pressed,
             style=Pack(
                 font_family=f,
-                height=46,
+                height=48,
                 font_size=12,
                 font_weight=BOLD,
                 margin_top=2,
@@ -1264,13 +1274,15 @@ class YTDownloaderApp(toga.App):
         self.app_sub_label.style.color = t["muted"]
         self.app_sub_label.style.background_color = t["page_bg"]
 
-        self.theme_button.text = f"◐ {t['label']}"
+        self.theme_button.text = t["toggle_text"]
 
         for card in self._cards:
             card.style.background_color = t["card_bg"]
             self.styler.apply(card, t["card_bg"], t["border"], radius=14)
         for inner in self._card_inners:
             inner.style.background_color = t["card_bg"]
+        for row in self.quality_grid.children:
+            row.style.background_color = t["card_bg"]
         for lbl in self._primary_labels:
             lbl.style.color = t["text"]
             lbl.style.background_color = t["card_bg"]
@@ -1286,7 +1298,13 @@ class YTDownloaderApp(toga.App):
 
         self.url_input.style.background_color = t["input_bg"]
         self.url_input.style.color = t["text"]
-        self.styler.style_input(self.url_input)
+        self.styler.style_input(
+            self.url_input,
+            t["input_bg"],
+            t["border"],
+            t["text"],
+            t["hint"],
+        )
 
         for accent_btn in (self.fetch_button, self.download_button):
             accent_btn.style.background_color = t["accent"]
@@ -1316,6 +1334,7 @@ class YTDownloaderApp(toga.App):
         _enable_android_multiline(self.status_label, max_lines=12)
 
         self._style_mode_buttons()
+        self._style_quality_buttons()
 
     def _style_mode_buttons(self):
         t = THEMES[self.theme_name]
@@ -1336,6 +1355,21 @@ class YTDownloaderApp(toga.App):
         self.audio_mode_btn.style.background_color = a_bg
         self.audio_mode_btn.style.color = a_fg
         self.styler.apply(self.audio_mode_btn, a_bg, a_bd, radius=10, is_button=True)
+
+    def _style_quality_buttons(self):
+        t = THEMES[self.theme_name]
+        for row in self.quality_grid.children:
+            row.style.background_color = t["card_bg"]
+        for value, detail, btn in self.quality_buttons:
+            active = value == self.selected_quality
+            bg = t["accent"] if active else t["secondary_bg"]
+            fg = t["accent_text"] if active else t["secondary_text"]
+            bd = t["accent_border"] if active else t["border"]
+            btn.style.background_color = bg
+            btn.style.color = fg
+            self.styler.apply(btn, bg, bd, radius=10, is_button=True)
+            if active:
+                self.quality_detail_label.text = f"Selected: {detail}"
 
     async def on_change_folder(self, widget):
         if self.state in ("fetching", "downloading"):
@@ -1439,8 +1473,9 @@ class YTDownloaderApp(toga.App):
 
         self.video_mode_btn.enabled = editable
         self.audio_mode_btn.enabled = editable
-        self.quality_selection.enabled = editable
-        self.download_button.enabled = editable and bool(self.quality_values)
+        for _, _, btn in self.quality_buttons:
+            btn.enabled = editable
+        self.download_button.enabled = editable and self.selected_quality is not None
 
         self.cancel_button.enabled = state == "downloading"
         self.cancel_button.text = "Cancel Download"
@@ -1579,55 +1614,101 @@ class YTDownloaderApp(toga.App):
         if self.info is not None:
             self._populate_quality()
 
+    def _on_quality_pill_pressed(self, value):
+        if self.state not in ("ready", "done"):
+            return
+        self.selected_quality = value
+        self._style_quality_buttons()
+        self.download_button.enabled = self.selected_quality is not None
+
     def _populate_quality(self):
         settings = load_settings()
         is_video = self.mode == "video"
+        f = self.ui_font
+        card_bg = THEMES[self.theme_name]["card_bg"]
 
-        labels: list[str] = []
-        values: list = []
+        for child in list(self.quality_grid.children):
+            self.quality_grid.remove(child)
+        self.quality_buttons = []
+
+        # entries: list of (value, short_pill_label, full_detail_label)
+        entries: list[tuple[object, str, str]] = []
 
         if is_video:
             self.quality_caption.text = "VIDEO QUALITY"
             options = self.video_options or [(720, None), (480, None), (360, None)]
             for height, size in options:
-                text = f"{height}p MP4"
+                detail = f"{height}p MP4"
                 if size:
-                    text += f"  ·  ~{format_file_size(size)}"
-                labels.append(text)
-                values.append(height)
+                    detail += f"  ·  ~{format_file_size(size)}"
+                entries.append((height, f"{height}p", detail))
             saved = settings.get("video_quality")
+            cols = 3
         else:
-            self.quality_caption.text = "AUDIO QUALITY"
+            self.quality_caption.text = "AUDIO FORMAT"
             if self.use_ffmpeg:
                 choices = list(AUDIO_CHOICES) + (
                     [ORIGINAL_AUDIO] if ORIGINAL_AUDIO not in AUDIO_CHOICES else []
                 )
                 for choice in choices:
-                    labels.append(audio_label(choice))
-                    values.append(choice)
+                    short = (
+                        "Original M4A"
+                        if choice == ORIGINAL_AUDIO
+                        else f"{choice} kbps"
+                    )
+                    entries.append((choice, short, audio_label(choice)))
+                cols = 2
             else:
-                labels.append("Original audio (M4A, no conversion)")
-                values.append(ORIGINAL_AUDIO)
+                entries.append(
+                    (
+                        ORIGINAL_AUDIO,
+                        "Original Audio (M4A)",
+                        "Original audio (M4A, no conversion)",
+                    )
+                )
+                cols = 1
             saved = settings.get("audio_bitrate")
 
-        self.quality_values = values
-        self.quality_selection.items = labels
-
+        values = [val for val, _, _ in entries]
         if saved in values:
-            self.quality_selection.value = labels[values.index(saved)]
-        elif labels:
-            self.quality_selection.value = labels[0]
+            self.selected_quality = saved
+        elif values:
+            self.selected_quality = values[0]
+        else:
+            self.selected_quality = None
 
-        self.download_button.enabled = bool(values)
+        for i in range(0, len(entries), cols):
+            chunk = entries[i : i + cols]
+            row = toga.Box(
+                style=Pack(direction=ROW, gap=8, background_color=card_bg)
+            )
+            for value, short_label, detail in chunk:
+                btn = toga.Button(
+                    short_label,
+                    on_press=lambda _w, v=value: self._on_quality_pill_pressed(v),
+                    style=Pack(
+                        font_family=f,
+                        flex=1,
+                        height=38,
+                        font_size=11,
+                        font_weight=BOLD,
+                    ),
+                )
+                row.add(btn)
+                self.quality_buttons.append((value, detail, btn))
+            for _ in range(cols - len(chunk)):
+                row.add(toga.Box(style=Pack(flex=1, background_color=card_bg)))
+            self.quality_grid.add(row)
+
+        self._style_quality_buttons()
+        self.download_button.enabled = self.selected_quality is not None
+        self.quality_grid.refresh()
 
     def on_download_pressed(self, widget):
-        if self.state not in ("ready", "done") or not self.quality_values:
+        if self.state not in ("ready", "done") or self.selected_quality is None:
             return
 
-        selected_label = self.quality_selection.value
-        items = [item.value for item in self.quality_selection.items]
-        idx = items.index(selected_label) if selected_label in items else 0
-        setting = self.quality_values[idx]
+        setting = self.selected_quality
         kind = self.mode
 
         self.cancel_event = threading.Event()
@@ -1697,7 +1778,9 @@ class YTDownloaderApp(toga.App):
         self.progress_bar.max = None
         self.progress_bar.start()
         self.progress_label.text = ""
-        self.cancel_button.enabled = self.state == "downloading" and "Merging" not in text
+        self.cancel_button.enabled = (
+            self.state == "downloading" and "Merging" not in text
+        )
 
     def on_progress(self, downloaded, total, speed, eta):
         if total:
