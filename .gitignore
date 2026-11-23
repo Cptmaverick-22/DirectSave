@@ -38,3 +38,6 @@ downloads/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+.briefcase/
+logs/

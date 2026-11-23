@@ -1,0 +1,45 @@
+[tool.briefcase]
+project_name = "yt-downloader"
+bundle = "com.maverick"
+version = "1.2.0"
+url = "https://github.com/Cptmaverick-22/yt-downloader"
+license = "GPL-3.0+"
+license-files = ["LICENSE"]
+author = "Cptmaverick-22"
+
+[tool.briefcase.app.ytdownloader]
+formal_name = "YT Downloader"
+description = "Simple YouTube video and audio downloader"
+long_description = "Download YouTube videos and audio cleanly on Android and desktop."
+sources = [
+    "android/ytdownloader",
+    "config.py",
+    "downloader.py",
+    "logs.py",
+    "updater.py",
+]
+requires = [
+    "yt-dlp",
+]
+
+[tool.briefcase.app.ytdownloader.android]
+requires = [
+    "toga-android>=0.5.0",
+]
+base_theme = "Theme.Material3.DayNight.NoActionBar"
+permission."android.permission.INTERNET" = {}
+permission."android.permission.ACCESS_NETWORK_STATE" = {}
+permission."android.permission.READ_EXTERNAL_STORAGE" = { max_sdk_version = "32" }
+permission."android.permission.WRITE_EXTERNAL_STORAGE" = { max_sdk_version = "29" }
+permission."android.permission.MANAGE_EXTERNAL_STORAGE" = {}
+android_abis = ["arm64-v8a", "armeabi-v7a"]
+
+[tool.briefcase.app.ytdownloader.windows]
+requires = [
+    "toga-winforms>=0.5.0",
+]
+
+[tool.briefcase.app.ytdownloader.linux]
+requires = [
+    "toga-gtk>=0.5.0",
+]

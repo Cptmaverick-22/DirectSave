@@ -1,0 +1,75 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Java 17 (required by Briefcase & Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Install Briefcase
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install briefcase
+
+      - name: Create Android project
+        run: briefcase create android --no-input
+
+      - name: Build Android project
+        run: briefcase build android --no-input
+
+      - name: Package installable APK
+        run: briefcase package android -p debug-apk --no-input
+
+      - name: Rename APK for clarity
+        run: |
+          mkdir -p release-apk
+          APK_FILE=$(find dist -maxdepth 2 -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "No APK found in dist/"
+            exit 1
+          fi
+          cp "$APK_FILE" "release-apk/YTDownloader-Android.apk"
+          ls -lh release-apk/
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YTDownloader-Android-APK
+          path: release-apk/YTDownloader-Android.apk
+          retention-days: 14
+
+      - name: Attach APK to GitHub Release (on version tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-apk/YTDownloader-Android.apk
+
+      - name: Upload Briefcase logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: briefcase-logs
+          path: logs/
+          if-no-files-found: ignore
