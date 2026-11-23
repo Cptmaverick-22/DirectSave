@@ -127,23 +127,31 @@ THEMES = {
     },
 }
 
+ANDROID_CLIENT_PROFILES: tuple[list[str], ...] = (
+    ["android", "android_vr", "web", "mweb"],
+    ["android_vr", "web"],
+    ["web", "mweb"],
+)
 
-def _android_extractor_args() -> dict:
-    """Return YouTube extractor args suited for Android clients."""
+
+def _android_extractor_args(clients: list[str] | None = None) -> dict:
+    """Return YouTube extractor args for a given client list."""
+    selected = clients or ANDROID_CLIENT_PROFILES[0]
     return {
         "youtube": {
-            "player_client": ["android_vr", "web"],
+            "player_client": selected,
         }
     }
 
 
-def _enable_android_multiline(label_widget: toga.Label, max_lines: int = 8):
-    """Allow Android TextView labels to wrap cleanly in portrait mode."""
+def _enable_android_multiline(label_widget: toga.Label, max_lines: int = 12):
+    """Force Android TextView labels to wrap vertically without horizontal clipping."""
     if not is_android():
         return
     try:
         native = label_widget._impl.native
         native.setSingleLine(False)
+        native.setHorizontallyScrolling(False)
         native.setMaxLines(max_lines)
         native.setEllipsize(None)
     except Exception:
@@ -415,24 +423,33 @@ def _pick_jpeg_thumbnail_url(info: dict, fallback_url: str | None) -> str | None
 
 
 def _android_fetch_info(url: str) -> dict:
-    """Extract video info on Android using mobile/VR extractor clients."""
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "skip_download": True,
-        "extractor_args": _android_extractor_args(),
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-        if not info:
-            raise DownloadError("Could not retrieve video information.")
-        return info
-    except DownloadError:
-        raise
-    except Exception as error:
-        raise DownloadError(friendly_error(error)) from error
+    """Extract video info on Android, rotating client profiles if needed."""
+    last_error: Exception | None = None
+    for clients in ANDROID_CLIENT_PROFILES:
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "extractor_args": _android_extractor_args(clients),
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if info:
+                return info
+        except Exception as error:
+            last_error = error
+            msg = str(error).lower()
+            if "not a bot" in msg or "sign in" in msg or "http error 403" in msg:
+                continue
+            raise DownloadError(friendly_error(error)) from error
+
+    raise DownloadError(
+        friendly_error(last_error)
+        if last_error
+        else "Could not retrieve video information."
+    )
 
 
 def _android_download_media(
@@ -443,7 +460,7 @@ def _android_download_media(
     reporter: Reporter,
     cancel: threading.Event,
 ) -> DownloadResult:
-    """Download playable media on Android without requiring an external ffmpeg binary."""
+    """Download playable media on Android with client and 403/format fallbacks."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if kind == "video":
@@ -455,7 +472,7 @@ def _android_download_media(
             f"best[height<={quality}][acodec!=none][vcodec!=none]",
             "best[ext=mp4][acodec!=none][vcodec!=none]",
             "best[acodec!=none][vcodec!=none]",
-            "best",
+            "best[ext=mp4]/best",
         ]
     else:
         tag = f"[{setting}]" if setting == ORIGINAL_AUDIO else f"[{setting}kbps]"
@@ -465,46 +482,47 @@ def _android_download_media(
         ]
 
     last_error: Exception | None = None
-    for spec in format_specs:
-        if cancel.is_set():
-            reporter.progress_done()
-            return DownloadResult("cancelled", output_dir)
+    for clients in ANDROID_CLIENT_PROFILES:
+        for idx, spec in enumerate(format_specs):
+            if cancel.is_set():
+                reporter.progress_done()
+                return DownloadResult("cancelled", output_dir)
 
-        tracker = ProgressTracker(reporter, expected_total=None, cancel=cancel)
-        opts = {
-            "quiet": True,
-            "noplaylist": True,
-            "format": spec,
-            "format_sort": (
-                [f"res:{setting}", "proto", "vcodec:h264"]
-                if kind == "video"
-                else ["abr", "proto"]
-            ),
-            "extractor_args": _android_extractor_args(),
-            "outtmpl": outtmpl,
-            "progress_hooks": [tracker],
-            "restrictfilenames": False,
-        }
+            tracker = ProgressTracker(reporter, expected_total=None, cancel=cancel)
+            opts = {
+                "quiet": True,
+                "noplaylist": True,
+                "format": spec,
+                "extractor_args": _android_extractor_args(clients),
+                "outtmpl": outtmpl,
+                "progress_hooks": [tracker],
+                "restrictfilenames": False,
+            }
+            if kind == "video" and idx < 2:
+                opts["format_sort"] = [f"res:{quality}", "proto", "vcodec:h264"]
+            elif kind == "audio":
+                opts["format_sort"] = ["abr", "proto"]
 
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            reporter.progress_done()
-            return DownloadResult("completed", output_dir)
-        except DownloadCancelled:
-            reporter.progress_done()
-            return DownloadResult("cancelled", output_dir)
-        except Exception as error:
-            last_error = error
-            msg = str(error).lower()
-            if (
-                "requested format is not available" in msg
-                or "no video formats found" in msg
-                or "format is not available" in msg
-            ):
-                continue
-            reporter.progress_done()
-            raise DownloadError(friendly_error(error)) from error
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+                reporter.progress_done()
+                return DownloadResult("completed", output_dir)
+            except DownloadCancelled:
+                reporter.progress_done()
+                return DownloadResult("cancelled", output_dir)
+            except Exception as error:
+                last_error = error
+                msg = str(error).lower()
+                if (
+                    "requested format is not available" in msg
+                    or "no video formats found" in msg
+                    or "format is not available" in msg
+                    or "http error 403" in msg
+                ):
+                    continue
+                reporter.progress_done()
+                raise DownloadError(friendly_error(error)) from error
 
     reporter.progress_done()
     raise DownloadError(
@@ -707,11 +725,11 @@ class YTDownloaderApp(toga.App):
 
         self.title_label = toga.Label(
             "",
-            style=Pack(font_family=f, font_size=13, font_weight=BOLD, flex=1),
+            style=Pack(font_family=f, font_size=13, font_weight=BOLD),
         )
         self.meta_label = toga.Label(
             "",
-            style=Pack(font_family=f, font_size=10, flex=1),
+            style=Pack(font_family=f, font_size=10),
         )
         _enable_android_multiline(self.title_label, max_lines=3)
         _enable_android_multiline(self.meta_label, max_lines=2)
@@ -808,7 +826,7 @@ class YTDownloaderApp(toga.App):
 
         self.folder_label = toga.Label(
             _format_responsive_path(self.download_dir, self._current_width),
-            style=Pack(font_family=f, font_size=11, flex=1),
+            style=Pack(font_family=f, font_size=11),
         )
         _enable_android_multiline(self.folder_label, max_lines=3)
         self._primary_labels.append(self.folder_label)
@@ -856,7 +874,7 @@ class YTDownloaderApp(toga.App):
 
         self.progress_bar = toga.ProgressBar(max=100, value=0)
         self.progress_label = toga.Label(
-            "", style=Pack(font_family=f, font_size=10, flex=1)
+            "", style=Pack(font_family=f, font_size=10)
         )
         _enable_android_multiline(self.progress_label, max_lines=2)
         self._muted_labels.append(self.progress_label)
@@ -882,17 +900,17 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.progress_card)
         self._card_inners.extend([progress_inner, progress_top])
 
-        # 8. Status banner card (wraps across multiple lines on narrow screens)
+        # 8. Status banner card (vertical column + non-scrolling Android TextView)
         self.status_label = toga.Label(
             "",
-            style=Pack(font_family=f, font_size=11, font_weight=BOLD, flex=1),
+            style=Pack(font_family=f, font_size=11, font_weight=BOLD),
         )
-        _enable_android_multiline(self.status_label, max_lines=8)
+        _enable_android_multiline(self.status_label, max_lines=12)
         status_inner = toga.Box(style=Pack(direction=COLUMN))
         status_inner.add(self.status_label)
         self.status_card = _make_card(status_inner)
         self._cards.append(self.status_card)
-        self._card_inners.extend([status_inner])
+        self._card_inners.append(status_inner)
 
         # Responsive vertical container inside ScrollContainer
         self.content_box = toga.Box(
@@ -974,7 +992,7 @@ class YTDownloaderApp(toga.App):
         self.status_label.style.color = t["status"].get(
             self._status_level, t["status"]["info"]
         )
-        _enable_android_multiline(self.status_label, max_lines=8)
+        _enable_android_multiline(self.status_label, max_lines=12)
 
         self._style_mode_buttons()
 
@@ -1123,7 +1141,7 @@ class YTDownloaderApp(toga.App):
         self.status_label.text = text
         palette = THEMES[self.theme_name]["status"]
         self.status_label.style.color = palette.get(level, palette["info"])
-        _enable_android_multiline(self.status_label, max_lines=8)
+        _enable_android_multiline(self.status_label, max_lines=12)
         self._rebuild_visible_sections()
 
     def on_url_edited(self, widget):
