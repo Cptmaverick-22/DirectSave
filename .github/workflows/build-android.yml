@@ -83,14 +83,26 @@ jobs:
           set -euo pipefail
           mkdir -p release-apk
 
-          UNSIGNED_APK=$(find dist -maxdepth 3 -name "*.apk" | head -n 1)
+          UNSIGNED_APK=$(find dist -maxdepth 3 -name "*.apk" -print -quit)
           if [ -z "$UNSIGNED_APK" ]; then
             echo "No APK found in dist/"
+            ls -la dist/ || true
             exit 1
           fi
+          echo "Found APK: $UNSIGNED_APK"
 
-          # Locate Android SDK build-tools (runner preinstalled or Briefcase cache)
-          BUILD_TOOLS_DIR=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" "$HOME/.cache/briefcase/tools/android_sdk/build-tools" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
+          # Locate Android SDK build-tools safely without failing on missing dirs
+          BUILD_TOOLS_DIR=""
+          for base in "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" "$HOME/.cache/briefcase/tools/android_sdk/build-tools"; do
+            if [ -d "$base" ]; then
+              candidate=$(find "$base" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n 1 || true)
+              if [ -n "$candidate" ] && [ -x "$candidate/apksigner" ]; then
+                BUILD_TOOLS_DIR="$candidate"
+                break
+              fi
+            fi
+          done
+
           if [ -z "$BUILD_TOOLS_DIR" ]; then
             echo "Could not locate Android build-tools (zipalign/apksigner)."
             exit 1
@@ -99,7 +111,7 @@ jobs:
 
           # Decode keystore from GitHub Secret
           KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
 
           # Zipalign and sign with v2/v3 APK Signature Scheme
           ALIGNED_APK="$RUNNER_TEMP/aligned.apk"
