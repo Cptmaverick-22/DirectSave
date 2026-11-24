@@ -1,539 +1,165 @@
 # YT Downloader
 
-Download YouTube videos as MP4, audio as MP3 (or the original audio), and whole playlists into folders of their own. Built with Python, [yt-dlp](https://github.com/yt-dlp/yt-dlp), FFmpeg and Qt.
+[![Latest Release](https://img.shields.io/github/v/release/Cptmaverick-22/yt-downloader?style=flat-square&color=E11D48)](https://github.com/Cptmaverick-22/yt-downloader/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Android%20%7C%20Windows%20%7C%20Linux%20%7C%20macOS-18181B?style=flat-square)](https://github.com/Cptmaverick-22/yt-downloader/releases)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square)](https://www.python.org/)
+[![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0%2B-10B981?style=flat-square)](LICENSE)
 
-It has two interfaces that share the same settings and download folder:
+A clean, fast, open-source YouTube video and audio downloader powered by `yt-dlp`. Available as a **signed Android APK**, a **standalone Windows desktop installer**, and a **cross-platform Python GUI & terminal app**.
 
-- **Window app** (`gui.py`): paste a link, click a button. Available as a ready-to-run **Windows installer** (no Python or FFmpeg setup needed) or from source.
-- **Terminal app** (`main.py`): a clean, menu-driven interface (run from source).
+---
 
-> Only download content that you own or have permission to download. See [Legal and responsible use](#legal-and-responsible-use).
+## Quick Downloads
 
-## Contents
+| Platform | Download | Notes |
+| :--- | :--- | :--- |
+| **Android** | [`YTDownloader-Android.apk`](https://github.com/Cptmaverick-22/yt-downloader/releases/latest) | Permanently signed release APK (no FFmpeg required) |
+| **Windows** | [`YTDownloader-Setup-1.3.exe`](https://github.com/Cptmaverick-22/yt-downloader/releases/latest) | Standalone installer with FFmpeg, FFprobe & Deno bundled |
+| **Linux / macOS** | [Run from source](#linux--macos-from-source) | Qt desktop GUI (`gui.py`) & Rich terminal UI (`main.py`) |
 
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Running the app](#running-the-app)
-- [Using the window app](#using-the-window-app)
-- [Using the terminal app](#using-the-terminal-app)
-- [Playlists](#playlists)
-- [Quality and formats](#quality-and-formats)
-- [Updating yt-dlp](#updating-yt-dlp)
-- [Where files and settings are stored](#where-files-and-settings-are-stored)
-- [File names](#file-names)
-- [Privacy](#privacy)
-- [Troubleshooting](#troubleshooting)
-- [Reporting a problem](#reporting-a-problem)
-- [For developers](#for-developers)
-- [Legal and responsible use](#legal-and-responsible-use)
+---
 
 ## Features
 
-**Downloading**
+### Android App (BeeWare Toga)
+- **Exact Quality Video Downloads (`144p` – `2160p` 4K):** Fetches exact resolutions with estimated file sizes and merges separate MP4 video + M4A audio streams natively on-device using Android's `MediaMuxer`.
+- **Direct Audio Extraction:** Fast, original-quality `M4A` audio downloads without slow re-encoding.
+- **Playlist Support (Video & Audio):** Automatically detects playlist links, lists all entries with **Select All / Clear Selection**, supports both MP4 (with max-resolution ceiling) and M4A audio, and saves neatly into a playlist subfolder.
+- **Download History & Native Playback:** Built-in **History** tab keeps track of downloaded videos and audio with one-tap **Play Video** / **Play Audio** launching your phone's native media player.
+- **Obsidian Dark & Light Themes:** OLED-friendly Obsidian dark mode and crisp Light mode with synced Android ActionBar and status bar colors, time-based greeting header, and high-contrast tappable quality pills.
+- **Custom Save Location:** Saves to `Internal Storage / Download/YT Downloader` by default, with a built-in Android folder picker.
 
-- Video as **MP4**, with an **estimated file size** shown for every resolution.
-- Audio as **MP3** (128, 192, 256 or 320 kbps) or as the **original audio** without conversion. Both get embedded **cover art and tags**.
-- **Playlists**: everything, a range such as `1-3, 5, 8-10`, or just the videos you tick. Each playlist goes into its own folder.
-- **Smart links**: paste a video link that belongs to a playlist and the app asks whether you want the single video or the whole playlist.
+### Desktop App (Windows, Linux, macOS)
+- **Qt Desktop GUI & Rich Terminal UI:** Choose between a full graphical interface (`gui.py`) or a sleek terminal interface (`main.py`) powered by the exact same download core.
+- **Full Format & MP3 Support:** Merges high-resolution streams via FFmpeg and converts audio to `128`, `192`, `256`, or `320 kbps` MP3—or keeps the original audio stream.
+- **Smart Playlist Handling:** Supports range selection (e.g., `1-5, 8`), ceiling resolution limits, automatic skipping of already-downloaded files, and organized playlist subfolders.
+- **In-App `yt-dlp` Self-Updater:** One-click updates from PyPI without needing to reinstall the app.
+- **Quality-of-Life Extras:** Dark/Light themes, desktop completion notifications, persistent user preferences, and rotating diagnostic logs.
 
-**Reliability**
-
-- One progress bar per download, with speed and time remaining.
-- Cancel at any time. Leftover temporary files are cleaned up.
-- Files you already downloaded are skipped, so re-running a playlist picks up where it stopped.
-- Temporary YouTube errors (HTTP 403, 429, 5xx) are retried automatically.
-- Checks the free disk space before a download starts.
-- Readable error messages, and a log file for the rest.
-
-**Convenience**
-
-- Remembers your last quality choices and your download folder.
-- Built-in **Update yt-dlp** button, because YouTube changes often. See [Updating yt-dlp](#updating-yt-dlp).
-- Desktop notification when a download finishes (Linux) and an "Open folder" button.
-- **Copy diagnostics** button for bug reports.
-
-## Requirements
-
-If you use the **Windows installer**, Python, PySide6, yt-dlp, FFmpeg and Deno are all bundled—you only need an internet connection.
-
-For running **from source** (Linux, macOS, or Windows source installs):
-
-| Needs | Why |
-|---|---|
-| **Python 3.11 to 3.15** | yt-dlp needs 3.11 or newer, and PySide6 currently supports up to 3.15. 3.12 or 3.13 is a safe choice. |
-| **FFmpeg** | Merges video and audio, converts MP3, embeds cover art. |
-| **Deno** | Lets yt-dlp solve YouTube's JavaScript checks. |
-| Python packages `yt-dlp[default]`, `rich`, `PySide6` | Installed from `requirements.txt`. |
-| An internet connection | To reach YouTube. |
-
-| System | Status |
-|---|---|
-| **Windows 10 and 11** | Tested. Ready-to-run installer available on [Releases](https://github.com/Cptmaverick-22/yt-downloader/releases). |
-| **Linux** | Developed and tested on Fedora (run from source). |
-| **macOS** | Written to work, **not tested yet** (run from source). |
-
-Desktop notifications work on Linux only (they need `notify-send`, which most desktops include).
+---
 
 ## Installation
 
-Pick your system. Every section ends with a working app.
+### Android (Signed APK)
+1. Open the [**Latest Release**](https://github.com/Cptmaverick-22/yt-downloader/releases/latest) page on your phone.
+2. Download **`YTDownloader-Android.apk`**.
+3. Tap the downloaded APK to install (enable **Install unknown apps** for your browser or file manager if prompted).
 
-### Windows
+> **Automatic Updates on Android:** You can track new releases automatically with [Obtainium](https://github.com/ImranR98/Obtainium) by adding `https://github.com/Cptmaverick-22/yt-downloader`.
 
-#### Option 1: Windows Installer (Recommended)
+---
 
-No Python, FFmpeg or Deno installation required—everything is bundled inside the app.
+### Windows (Standalone Installer)
+1. Open the [**Latest Release**](https://github.com/Cptmaverick-22/yt-downloader/releases/latest) page.
+2. Download and run **`YTDownloader-Setup-1.3.exe`**.
+3. **FFmpeg**, **FFprobe**, and **Deno** are bundled automatically—no additional setup required.
 
-1. Open the [Releases](https://github.com/Cptmaverick-22/yt-downloader/releases) page and download the latest **`YTDownloader-Setup-<version>.exe`**.
-2. Double-click the installer to run it.
-   - Because the app is not code-signed, Windows SmartScreen may show **"Windows protected your PC"**. Click **More info → Run anyway** to continue.
-3. Follow the setup wizard (tick **Create a desktop shortcut** if you want one).
-   - Installs per-user into `%LOCALAPPDATA%\Programs\YTDownloader`—no administrator password or UAC prompt is required.
-4. Launch **YT Downloader** from the Start Menu or Desktop shortcut.
+> **Windows SmartScreen Note:** Because the installer is not EV code-signed, Windows may display *"Windows protected your PC"*. Click **More info → Run anyway** to continue.
 
-To uninstall later, remove **YT Downloader** from **Windows Settings → Apps → Installed apps**. Your downloaded videos and settings in `%APPDATA%\yt-downloader\` are kept intact.
+---
 
-#### Option 2: Run from source (Windows)
+### Linux / macOS (From Source)
 
-Use this option if you want to run the terminal app (`main.py`) or develop on Windows. Use **Windows Terminal** (the default on Windows 11)—the old `cmd.exe` window can show garbled symbols in the terminal app.
+#### Prerequisites
+- **Python 3.10+**
+- **FFmpeg** (required for HD video/audio merging and MP3 conversion)
+- **Deno** (recommended JS runtime for YouTube extraction)
 
-**1. Install Python 3.11 to 3.15** from [python.org](https://www.python.org/downloads/). In the installer, tick **"Add python.exe to PATH"**.
-
-**2. Install FFmpeg and Deno.** Open PowerShell and run:
-
-```powershell
-winget install Gyan.FFmpeg
-winget install DenoLand.Deno
-```
-
-Close and reopen the terminal, then check:
-
-```powershell
-python --version
-ffmpeg -version
-deno --version
-```
-
-**3. Get the project**
-
-```powershell
-git clone https://github.com/Cptmaverick-22/yt-downloader.git
-cd yt-downloader
-```
-
-No git? Download the ZIP from the GitHub page, extract it, and open PowerShell in that folder.
-
-**4. Create a virtual environment and install the packages**
-
-```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-If PowerShell refuses to run the activation script, run this once and try again:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-**5. Start the app**
-
-```powershell
-python gui.py
-```
-
-### Linux
-
-**1. Install the system tools**
-
-*Fedora*
-
-```bash
-sudo dnf install python3 git curl unzip
-```
-
-Fedora's default FFmpeg may lack MP3 encoding. Install the full version from [RPM Fusion](https://rpmfusion.org/):
-
-```bash
-sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-sudo dnf swap ffmpeg-free ffmpeg --allowerasing
-```
-
-*Ubuntu, Debian and Linux Mint*
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip git curl unzip ffmpeg libxcb-cursor0
-```
-
-Ubuntu 22.04 ships Python 3.10, which is too old. Use Ubuntu 24.04 or newer, or install a newer Python yourself.
-
-*Other distributions:* install Python 3.11 or newer, `git`, `curl`, `unzip` and FFmpeg with your package manager.
-
-**2. Install Deno**
-
-```bash
-curl -fsSL https://deno.land/install.sh | sh
-```
-
-If the installer doesn't update your shell configuration, add Deno to your PATH yourself:
-
-```bash
-echo 'export PATH="$HOME/.deno/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**3. Check the tools**
-
-```bash
-python3 --version
-ffmpeg -version
-deno --version
-```
-
-Each command should print a version. `python3 --version` must show 3.11 or newer.
-
-**4. Get the project**
-
-```bash
-git clone https://github.com/Cptmaverick-22/yt-downloader.git
-cd yt-downloader
-```
-
-No git? Download the ZIP from the GitHub page, extract it, and open a terminal in that folder.
-
-**5. Create a virtual environment and install the packages**
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-**6. Start the app**
-
-```bash
-python gui.py
-```
-
-### macOS
-
-```bash
-brew install python ffmpeg deno git
-git clone https://github.com/Cptmaverick-22/yt-downloader.git
-cd yt-downloader
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python gui.py
-```
-
-## Running the app
-
-- **Windows installer:** Open **YT Downloader** from the Start Menu or Desktop shortcut.
-- **From source (Linux, macOS, or Windows):** Open a terminal in the project folder and activate the virtual environment first:
-
-| | Linux and macOS | Windows (from source) |
-|---|---|---|
-| Activate | `source .venv/bin/activate` | `.venv\Scripts\Activate.ps1` |
-| Window app | `python gui.py` | `python gui.py` |
-| Terminal app | `python main.py` | `python main.py` |
-| Diagnostics report | `python main.py --diagnostics` | `python main.py --diagnostics` |
-
-You can skip the activation by calling the environment's Python directly, for example `.venv/bin/python gui.py` (Linux and macOS) or `.venv\Scripts\python.exe gui.py` (Windows).
-
-## Using the window app
-
-1. **Paste a YouTube link** and press **Fetch** (or Enter).
-2. The thumbnail, title, channel, duration and date appear.
-3. Choose **Video (MP4)** or **Audio**.
-4. Pick the **quality**. Videos show an estimated size per resolution, and your last choice is pre-selected.
-5. Check **Save to** (press **Change…** to pick another folder).
-6. Press **Download**. A progress bar shows size, speed and time remaining. **Cancel** stops cleanly.
-7. When it finishes you get a notification (Linux) and an **Open folder** button.
-
-If a link points at a video inside a playlist, a dialog asks whether you want just the video or the whole playlist.
-
-After an error, a **Copy diagnostics** button appears. See [Reporting a problem](#reporting-a-problem).
-
-## Using the terminal app
-
-Start it with `python main.py`:
-
-```text
-╭────── YT Downloader v1.1 ───────╮
-│                                 │
-│   1  Download Video             │
-│   2  Download Audio             │
-│   3  Download Playlist          │
-│   4  Change Download Location   │
-│   5  Update yt-dlp              │
-│   6  Exit                       │
-│                                 │
-╰─────────────────────────────────╯
-```
-
-| Option | What happens |
-|---|---|
-| **1. Download Video** | Paste a link, check the info, pick a resolution from the table (Enter reuses your last choice), confirm. |
-| **2. Download Audio** | Paste a link, pick an MP3 bitrate or "Original audio", confirm. |
-| **3. Download Playlist** | See [Playlists](#playlists). |
-| **4. Change Download Location** | Enter a new folder. It is saved for next time. |
-| **5. Update yt-dlp** | See [Updating yt-dlp](#updating-yt-dlp). |
-| **6. Exit** | Quit. |
-
-Type **Q** at most prompts to go back. Press **Ctrl+C** during a download to cancel it. Leftover temporary files are removed.
-
-## Playlists
-
-**Window app:** paste a playlist link and press Fetch. You get a checklist of every video.
-
-- Untick videos you don't want, or use **All** and **None**.
-- Type a **range** such as `1-3, 5, 8-10`. The checkboxes follow, and the other way round.
-- Use **Filter videos by title** to find videos in a long playlist.
-- Edit the **Subfolder** name, or keep the playlist's title.
-- Press **Download N items**. If some videos fail, **View failed** shows why.
-
-**Terminal app:** choose option 3, pick Video or Audio, choose a quality, enter a range (Enter means everything) and a folder name (Enter means the playlist's title), and confirm.
-
-Good to know:
-
-- **For playlists the resolution is a ceiling.** "Up to 1080p" means the best available up to 1080p for each video, because the videos in a playlist rarely offer the same resolutions. Playlist options run from 2160p down to 360p.
-- **Finished videos are skipped**, whatever resolution they were saved in. An MP3 at a different bitrate counts as a different download.
-- To resume an interrupted playlist, run it again with the same folder name.
-- Private or deleted videos are reported and skipped, and the rest continues.
-- **Not supported as playlists:** YouTube Mix lists (the personalised ones), Watch Later, Liked videos (these need you to be signed in) and channel pages. For a channel, open one of its playlists and paste that link.
-
-## Quality and formats
-
-**Video** is saved as MP4. Resolutions are labelled the way YouTube labels them (144p up to 2160p, whichever the video offers as MP4).
-
-- Up to **1080p** the app prefers **H.264**, which plays almost everywhere.
-- **1440p and 2160p** are **AV1**, because YouTube has no H.264 above 1080p. They play in browsers, VLC and mpv, but not on some older TVs, phones and editors. Choose 1080p or lower if a device can't play a file.
-
-**Audio** has two kinds:
-
-- **MP3** at 128, 192, 256 or 320 kbps, with cover art and tags. YouTube's audio is typically around 128 kbps, so a higher bitrate doesn't add quality. It only makes the file bigger.
-- **Original audio (no conversion):** YouTube's own audio saved as an `.m4a` file, with cover art and tags. It's faster and smaller than converting, and nothing is re-encoded.
-
-Live streams and upcoming premieres can't be downloaded. Private, age-restricted, members-only and region-blocked videos aren't supported either, because the app has no sign-in.
-
-## Updating yt-dlp
-
-YouTube changes often, and an outdated yt-dlp is the most common reason downloads suddenly fail.
-
-**In the app:** click **Update yt-dlp** in the window (works in both the Windows installer and source builds), or choose option **5** in the terminal app. It shows your version and the newest one and installs only if you agree. The new version is used **after a restart** (the window offers to restart for you).
-
-How it works:
-
-- The new yt-dlp (and the small helper it needs) is downloaded from PyPI into the app's settings folder. The files are checked against PyPI's checksums, tested with your Python, and only then installed.
-- It is loaded ahead of the bundled or installed copy. If it ever fails to load, it is deleted and the built-in copy is used, so a bad update can't break the app.
-- If you later upgrade the Windows app (or update yt-dlp with pip) to a version that is at least as new, the downloaded copy is removed automatically.
-- To go back to the built-in version, open the update screen again and choose **"Use the built-in version"** (window) or answer **y** to "Go back to the yt-dlp that came with the app?" (terminal).
-
-**Daily check:** once a day the app asks PyPI whether a newer yt-dlp exists, and only shows a notice. It never installs anything by itself. You can turn the check off with the checkbox in the window's update dialog, with the question in the terminal's update screen, or by setting `"check_updates": false` in `settings.json`.
-
-**With pip (from source):** inside your virtual environment, run `pip install -U "yt-dlp[default]"`.
-
-## Where files and settings are stored
-
-**Downloads** go to a folder called **YT Downloader** inside your Downloads folder (on Linux the app follows your desktop's Downloads folder, even if it is translated). Change it any time. Playlists get a subfolder.
-
-**Settings, log and updates** live in a per-user folder, so they survive reinstalling or upgrading the app:
-
-| System | Folder |
-|---|---|
-| Linux | `~/.config/yt-downloader/` |
-| Windows | `%APPDATA%\yt-downloader\` |
-| macOS | `~/Library/Application Support/yt-downloader/` |
-
-| Inside that folder | What it is |
-|---|---|
-| `settings.json` | Your saved choices, shared by both interfaces. |
-| `yt-downloader.log` | The log (older copies are kept as `.1` and `.2`). |
-| `updates/` | Downloaded yt-dlp updates. |
-
-```json
-{
-    "download_dir": "/home/you/Videos/YouTube",
-    "video_quality": 1080,
-    "audio_bitrate": "original",
-    "check_updates": true,
-    "theme":"dark"
-}
-```
-
-| Key | Meaning |
-|---|---|
-| `download_dir` | Where files are saved. |
-| `video_quality` | Last resolution used. |
-| `audio_bitrate` | Last audio choice (a bitrate such as `192`, or `"original"`). |
-| `check_updates` | Set to `false` to turn off the daily update check. |
-
-You can edit or delete the file at any time. If it is missing or damaged, the app uses its defaults. If your saved download folder can't be used (for example an unplugged drive), the app uses the default folder instead and writes the reason to the log.
-
-## File names
-
-```text
-<Title> [<quality>] [<video id>].<extension>
-```
-
-```text
-Loose Emotions EP 12 [720p] [ZG98zgaVIGg].mp4
-Loose Emotions EP 12 [192kbps] [ZG98zgaVIGg].mp3
-Loose Emotions EP 12 [original] [ZG98zgaVIGg].m4a
-```
-
-The quality and the YouTube video ID always stay at the end of the name. The app uses them to recognise files it already downloaded, so the same video at the same quality is never downloaded twice, while different qualities can sit side by side.
-
-Titles are cleaned so the names work on Linux, Windows and macOS:
-
-| In the title | In the file or folder name |
-|---|---|
-| `:` | ` -` |
-| `/` `\` `\|` | `-` |
-| `"` | `'` |
-| `?` `*` `<` `>` | removed |
-| Control and invisible characters | removed |
-| Repeated spaces | one space |
-| Leading or trailing dots and spaces | removed |
-| Windows reserved names (`CON`, `NUL`, `COM1` and so on) | prefixed with `_` |
-
-Other rules:
-
-- Titles in any script (Hindi, Japanese, Arabic and so on) are kept and never cut in the middle of a character.
-- Titles are limited to 150 bytes. On Windows they are shortened further when the folder path is long, so the whole path stays under Windows' 260-character limit.
-- Playlist folder names follow the same rules and are limited to 80 bytes.
-- If a title is empty after cleaning, the video ID is used instead.
-
-## Privacy
-
-- The app has no accounts and sends no usage statistics.
-- It talks to YouTube (through yt-dlp, and for thumbnails), and to PyPI for the yt-dlp update check (at most once a day, and you can turn it off).
-- The log records links and titles of what you download, with share-tracking parameters such as `si=` removed.
-- The diagnostics report replaces your home folder with `~`. Read its "Recent log" section before posting it publicly.
-
-## Troubleshooting
-
-**Windows SmartScreen says "Windows protected your PC".** Because the Windows installer is not signed with a paid code-signing certificate, Windows warns on first run. Click **More info → Run anyway**.
-
-**The window doesn't open on Linux: "Could not load the Qt platform plugin".** A system library is missing.
-
+Install prerequisites on Linux:
 ```bash
 # Fedora
-sudo dnf install xcb-util-cursor
+sudo dnf install python3 ffmpeg
 
-# Ubuntu, Debian, Mint
-sudo apt install libxcb-cursor0
+# Ubuntu / Debian
+sudo apt update && sudo apt install python3 python3-venv ffmpeg
+
+# Arch
+sudo pacman -S python ffmpeg
 ```
 
-**Lines starting with `qt.qpa.wayland` or "Could not register app ID" appear in the terminal.** These are harmless desktop-integration messages from Wayland. The app works normally.
+#### Clone & Run
+```bash
+git clone https://github.com/Cptmaverick-22/yt-downloader.git
+cd yt-downloader
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 
-**FFmpeg or Deno not found (from source).** Check `ffmpeg -version` and `deno --version`. On Linux and macOS make sure `~/.deno/bin` is on your PATH. On Windows, close and reopen the terminal after installing so the PATH updates. (The Windows installer bundles both tools automatically.)
+# Launch Desktop GUI
+python gui.py
 
-**Downloads suddenly fail, or formats are missing.** Update yt-dlp (see [Updating yt-dlp](#updating-yt-dlp)). This fixes most sudden failures.
+# Or launch Terminal Interface
+python main.py
+```
 
-**"HTTP Error 403" or "429".** Usually temporary. The app retries up to two more times. If it keeps happening, update yt-dlp and try again later. Downloading many videos quickly can trigger YouTube's rate limits.
+---
 
-**"Requires authentication", "age-restricted", "members only", "unavailable" or "not available in your country".** The video needs a signed-in account, was removed, or is blocked in your region. The app can't sign in.
+## For Developers
 
-**MP3 conversion fails, or there is no cover art.** On Fedora, install the full FFmpeg from RPM Fusion (see [Installation](#installation)). Fedora's default build may lack MP3 encoding.
-
-**A 1440p or 2160p file won't play on my TV or phone.** Those resolutions are AV1. Download 1080p or lower for H.264.
-
-**The estimated size is slightly off.** Sizes come from the information YouTube provides. When it is only approximate, the final file can differ by a few percent.
-
-**"Not enough free disk space".** The app estimates the space a download needs (a video needs room for its parts and the merged file at the same time) and stops early. Free some space or choose another folder.
-
-**Files end up in a different folder than the one I chose.** If the saved folder can't be used, the app falls back to the default and logs why. Press **Copy diagnostics** or run `python main.py --diagnostics` to see the reason.
-
-**No notification, or the folder doesn't open.** Notifications work on Linux only and need `notify-send`. If a folder doesn't open, open the download folder by hand. Downloads work either way.
-
-**Strange symbols in the terminal app on Windows.** Use Windows Terminal instead of the old `cmd.exe` window.
-
-**"File not found" on very long titles (Windows).** Windows limits paths to 260 characters by default. Use a shorter playlist folder name, or a download location closer to the drive root, such as `C:\Downloads`.
-
-**A download was interrupted.** Press **Cancel** (or Ctrl+C) to stop cleanly. Run the same download again to start over. Finished files are skipped.
-
-## Reporting a problem
-
-1. In the window, press **Copy diagnostics** (it appears after an error), or run `python main.py --diagnostics` from source.
-2. The report lists the app, Python, yt-dlp, FFmpeg and Deno versions, which yt-dlp copy is in use, and the end of the log.
-3. Check the "Recent log" part for anything private, then paste the report into your bug report together with what you did and what you expected.
-
-## For developers
-
+### Project Structure
 ```text
 yt-downloader/
-├── gui.py                                # Window app (Qt)
+├── android/
+│   └── ytdownloader/
+│       ├── app.py                        # Android UI (BeeWare Toga + native MediaMuxer)
+│       ├── storage.py                    # Android storage & path helpers
+│       └── resources/icon.png            # Android launcher icon
+├── .github/workflows/
+│   ├── build-android.yml                 # Signed Android APK build & GitHub Release workflow
+│   └── build-windows.yml                 # Windows PyInstaller + Inno Setup Release workflow
+├── gui.py                                # Desktop GUI app (Qt)
+├── themes.py                             # Desktop Dark/Light themes
 ├── main.py                               # Terminal app (Rich)
-├── Themes.py                             # Dark and Light Qt themes
-├── downloader.py                         # Core logic: fetching, downloading, playlists
-├── updater.py                            # In-app yt-dlp updates (standard library only)
-├── config.py                             # Constants and settings
-├── logs.py                               # Log file and diagnostics report
-├── desktop.py                            # Notifications and opening folders
-├── app.ico                               # Application icon (Windows exe, installer, GUI)
-├── ytdownloader.spec                     # PyInstaller build configuration
+├── downloader.py                         # Shared core: fetching, downloading, playlists
+├── updater.py                            # In-app yt-dlp updater (stdlib only)
+├── config.py                             # Unified app version, presets & settings
+├── logs.py                               # Rotating logs & diagnostics
+├── desktop.py                            # Desktop notifications & folder actions
+├── pyproject.toml                        # BeeWare Briefcase Android configuration
+├── ytdownloader.spec                     # PyInstaller Windows build specification
 ├── installer.iss                         # Inno Setup Windows installer script
-├── .github/workflows/build-windows.yml   # Automated Windows build & GitHub Release workflow
 ├── requirements.txt
 ├── requirements-dev.txt
+├── LICENSE                               # GPL-3.0+
 ├── README.md
 └── tests/
 ```
 
-| File | Purpose |
-|---|---|
-| `downloader.py` | The core. It never prints or asks questions: interfaces pass in a `Reporter` to receive progress and a cancel event to stop a download. |
-| `gui.py` and `main.py` | Thin interfaces over the same core, so a change to downloading lands in both. |
-| `updater.py` | Downloads yt-dlp from PyPI and loads it first (including ahead of PyInstaller's frozen importer). It must not import yt-dlp itself. |
-| `config.py` | Version, quality lists, and loading and saving the settings file. |
-| `ytdownloader.spec` & `installer.iss` | Package `gui.py`, FFmpeg, FFprobe, and Deno into a standalone Windows app and Inno Setup installer. |
+### Architecture Notes
+| Module | Responsibility |
+| :--- | :--- |
+| `downloader.py` | UI-agnostic download engine; frontends pass a `Reporter` and a `threading.Event` cancel flag. |
+| `android/ytdownloader/app.py` | Mobile Toga UI featuring native Android `MediaMuxer` merging, playlist selection, and history playback. |
+| `gui.py` / `main.py` | Desktop Qt GUI and Rich CLI interfaces built over `downloader.py`. |
+| `updater.py` | Fetches `yt-dlp` updates from PyPI and injects them ahead of bundled imports. |
+| `config.py` | Single source of truth for `APP_VERSION`, quality presets, and user preferences. |
 
-One rule matters: **`updater.activate()` must run before anything imports yt-dlp.** Both `gui.py` and `main.py` do this at the very top. Keep it first when you add an entry point.
+> **Entry-Point Rule:** In desktop entry points (`gui.py` and `main.py`), `updater.activate()` must be called **before** any module imports `yt_dlp`.
 
-**Run the checks**
-
+### Local Lint & Tests
 ```bash
 pip install -r requirements-dev.txt
+python -m pyflakes *.py android/ytdownloader/app.py
 python -m unittest discover tests -v
-python -m pyflakes *.py
 ```
 
-The tests need no network access. `tests/test_names.py` runs pyflakes automatically and is skipped when pyflakes isn't installed. The window itself isn't covered by tests, so run pyflakes after editing `gui.py`.
+### Unified Release Workflow (CI/CD)
+Both platforms are built and attached automatically via GitHub Actions when a version tag is pushed:
+1. Update `APP_VERSION` in `config.py` (e.g., `"1.3"`) and `version` in `pyproject.toml` (e.g., `"1.3.0"`).
+2. Commit and push to `main`.
+3. Tag and push:
+   ```bash
+   git tag v1.3
+   git push origin v1.3
+   ```
+GitHub Actions automatically builds, signs `YTDownloader-Android.apk` (using repository signing secrets), compiles `YTDownloader-Setup-<version>.exe`, and attaches both assets to the GitHub Release.
 
-**Publishing a Windows release**
+---
 
-Update `APP_VERSION` in `config.py`, commit and push to `main`, then push a matching version tag:
+## Legal & Responsible Use
 
-```bash
-git tag v1.2
-git push origin v1.2
-```
-
-GitHub Actions automatically builds `YTDownloader-Setup-<version>.exe` and publishes it to the repository's **Releases** page.
-
-## Legal and responsible use
-
-This application is intended for downloading content that you own, have permission to download, or are otherwise legally authorized to download.
-
-Respect copyright laws, YouTube's Terms of Service and the rights of content creators. Do not use this software to infringe copyright or bypass access restrictions.
-
-## Roadmap
-
-Ideas, not promises:
-
-- Ready-to-run Linux packages (an archive and AppImage) with FFmpeg and Deno included, and a single launcher command
-- Faster playlists by preparing the next video while one downloads
-- Subtitles, and downloading a clip by start and end time
-- An option for WebM or MKV to offer more formats above 1080p
-- Windows desktop notifications, and a download history
+This software is intended solely for downloading content that you own, have explicit permission to download, or are otherwise legally permitted to save. Please respect copyright laws, YouTube's Terms of Service, and content creators' rights.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0 (GPLv3)** — see the [LICENSE](LICENSE) file for details.
-
-The Windows installer bundles third-party software (FFmpeg, PySide6, yt-dlp, Deno, and Python). See [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) for their respective licenses and source links.
+Licensed under the **GNU General Public License v3.0 or later (`GPL-3.0+`)**. See [LICENSE](LICENSE) for full terms.
