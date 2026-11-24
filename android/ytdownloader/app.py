@@ -2667,7 +2667,7 @@ class YTDownloaderApp(toga.App):
             if result.filename:
                 q_str = "M4A" if kind == "audio" else f"{setting}p"
                 self._record_history(
-                    title, kind, q_str, result.output_dir / result.filename
+                    title, kind, q_str, self.download_dir / result.filename
                 )
             self.show_status("Download complete. Saved to History.", "success")
         elif result.status == "exists":
