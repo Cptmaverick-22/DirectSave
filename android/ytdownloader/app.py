@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime
+import json
 import logging
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -55,6 +57,8 @@ from ytdownloader.storage import (
 )
 
 THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024
+PLAYLIST_QUALITIES = (1080, 720, 480, 360)
+MAX_HISTORY_ITEMS = 100
 
 THEME_ORDER = ("obsidian", "light")
 
@@ -164,12 +168,27 @@ def _time_greeting() -> tuple[str, str]:
     """Return a time-of-day greeting and subtle subtitle."""
     hour = datetime.now().hour
     if 5 <= hour < 12:
-        return "Good morning", "Paste a YouTube link to get started"
+        return "Good morning", "Paste a video or playlist link"
     if 12 <= hour < 17:
-        return "Good afternoon", "Paste a YouTube link to get started"
+        return "Good afternoon", "Paste a video or playlist link"
     if 17 <= hour < 22:
-        return "Good evening", "Paste a YouTube link to get started"
-    return "Good night", "Paste a YouTube link to get started"
+        return "Good evening", "Paste a video or playlist link"
+    return "Good night", "Paste a video or playlist link"
+
+
+def _is_playlist_url(url: str) -> bool:
+    """Return True if the URL explicitly targets a YouTube playlist."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        has_list = bool(qs.get("list"))
+        if "/playlist" in parsed.path.lower() and has_list:
+            return True
+        if has_list and not qs.get("v"):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _is_dns_or_network_error(error: Exception) -> bool:
@@ -299,6 +318,53 @@ def _format_responsive_path(path: Path, available_px: int) -> str:
     return f"{text[:keep_start]}…{text[-keep_end:]}"
 
 
+def _open_media_file(app, file_path: Path, kind: str) -> str | None:
+    """Launch the native video or audio player for a downloaded file. Returns error or None."""
+    if not file_path.is_file():
+        return "File not found on storage. It may have been moved or deleted."
+
+    if is_android():
+        try:
+            from android.content import Intent
+            from android.net import Uri
+            from android.os import StrictMode
+            from java.io import File as JavaFile
+
+            # Allow launching file:// URI directly without requiring a custom FileProvider XML
+            StrictMode.setVmPolicy(StrictMode.VmPolicy.Builder().build())
+
+            mime = "audio/*" if kind == "audio" else "video/*"
+            ext = file_path.suffix.lower()
+            if ext == ".mp4":
+                mime = "video/mp4"
+            elif ext in (".m4a", ".mp3", ".opus", ".webm") and kind == "audio":
+                mime = "audio/*"
+
+            uri = Uri.fromFile(JavaFile(str(file_path)))
+            intent = Intent(Intent.ACTION_VIEW)
+            intent.setDataAndType(uri, mime)
+            intent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            app._impl.native.startActivity(intent)
+            return None
+        except Exception as err:
+            logging.getLogger("ytdl").warning(
+                "Failed to open media file on Android: %s", err, exc_info=True
+            )
+            return f"Could not open player: {err}"
+
+    if sys.platform == "win32":
+        try:
+            os.startfile(str(file_path))
+            return None
+        except Exception as err:
+            return f"Could not open file: {err}"
+
+    return "Native playback is only supported on Android and Windows."
+
+
 def _winforms_rounded_path(width: int, height: int, radius: int, inset: int = 0):
     """Build a .NET GraphicsPath with smooth rounded corners."""
     import System.Drawing.Drawing2D as Drawing2D
@@ -332,9 +398,12 @@ class _NativeStyler:
         border_hex: str,
         radius: int = 12,
         is_button: bool = False,
+        left_align: bool = False,
     ):
         if is_android():
-            self._apply_android(widget, bg_hex, border_hex, radius, is_button)
+            self._apply_android(
+                widget, bg_hex, border_hex, radius, is_button, left_align
+            )
         elif sys.platform == "win32":
             self._apply_winforms(widget, bg_hex, border_hex, radius, is_button)
 
@@ -345,10 +414,12 @@ class _NativeStyler:
         border_hex: str,
         radius_dp: int,
         is_button: bool = False,
+        left_align: bool = False,
     ):
         try:
             from android.graphics import Color
             from android.graphics.drawable import GradientDrawable
+            from android.view import Gravity
 
             native = widget._impl.native
             density = native.getContext().getResources().getDisplayMetrics().density
@@ -361,6 +432,8 @@ class _NativeStyler:
                 native.setAllCaps(False)
                 pad_h = int(10 * density)
                 native.setPadding(pad_h, 0, pad_h, 0)
+                if left_align:
+                    native.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL)
         except Exception:
             pass
 
@@ -682,6 +755,57 @@ def _android_mux_mp4(video_path: Path, audio_path: Path, output_path: Path) -> N
             pass
 
 
+def _fetch_playlist_flat(url: str) -> dict:
+    """Fetch playlist title and flat entry list quickly without downloading."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": False,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "socket_timeout": 12,
+        "retries": 1,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as error:
+        if _is_dns_or_network_error(error):
+            raise DownloadError(
+                "Android DNS error (Errno 7): could not resolve YouTube host. "
+                "Toggle airplane mode or switch Wi-Fi / 5G and retry."
+            ) from error
+        raise DownloadError(friendly_error(error)) from error
+
+    entries = [
+        e for e in (info.get("entries") or []) if isinstance(e, dict) and (e.get("id") or e.get("url"))
+    ]
+    if not entries:
+        raise DownloadError("This playlist is empty or private.")
+
+    normalized: list[dict] = []
+    for idx, entry in enumerate(entries, start=1):
+        vid = entry.get("id") or ""
+        entry_url = entry.get("url") or ""
+        if not entry_url.startswith("http"):
+            entry_url = f"https://www.youtube.com/watch?v={vid}"
+        normalized.append(
+            {
+                "index": idx,
+                "id": vid,
+                "title": entry.get("title") or f"Video {idx}",
+                "duration": entry.get("duration"),
+                "url": entry_url,
+            }
+        )
+
+    return {
+        "title": info.get("title") or "YouTube Playlist",
+        "uploader": info.get("uploader") or info.get("channel") or "YouTube",
+        "entries": normalized,
+    }
+
+
 def _android_fetch_info(url: str) -> dict:
     """Extract video info on Android, rotating client profiles on failure."""
     last_error: Exception | None = None
@@ -747,7 +871,7 @@ def _download_single_stream(
     reporter: Reporter,
     cancel: threading.Event,
     info: dict | None = None,
-) -> None:
+) -> Path | None:
     """Download one exact stream, reusing fetched info first for instant start."""
     profiles: tuple[list[str] | None, ...] = (
         None,
@@ -755,6 +879,12 @@ def _download_single_stream(
     )
     last_error: Exception | None = None
     saw_dns_error = False
+    saved_path: list[Path] = []
+
+    def _capture_hook(d):
+        fn = d.get("filename")
+        if fn:
+            saved_path.append(Path(fn))
 
     for attempt_idx, clients in enumerate(profiles):
         if cancel.is_set():
@@ -768,7 +898,7 @@ def _download_single_stream(
             "format_sort": format_sort,
             "outtmpl": outtmpl,
             "overwrites": True,
-            "progress_hooks": [tracker],
+            "progress_hooks": [tracker, _capture_hook],
             "restrictfilenames": False,
             "socket_timeout": 10,
             "retries": 2,
@@ -784,13 +914,13 @@ def _download_single_stream(
                         ydl.process_ie_result(
                             _strip_stale_format_keys(info), download=True
                         )
-                        return
+                        return saved_path[-1] if saved_path else None
                     except DownloadCancelled:
                         raise
                     except Exception:
                         pass
                 ydl.download([url])
-            return
+            return saved_path[-1] if saved_path else None
         except DownloadCancelled:
             raise
         except Exception as error:
@@ -830,6 +960,7 @@ def _android_download_media(
     reporter: Reporter,
     cancel: threading.Event,
     info: dict | None = None,
+    stage_prefix: str = "",
 ) -> DownloadResult:
     """Download the exact selected video quality (muxed via Android MediaMuxer) or M4A audio."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -844,7 +975,8 @@ def _android_download_media(
     if kind == "audio":
         outtmpl = str(output_dir / f"{safe_title} [{ORIGINAL_AUDIO}] [{vid}].%(ext)s")
         try:
-            _download_single_stream(
+            reporter.stage(f"{stage_prefix}Downloading audio…")
+            saved = _download_single_stream(
                 url=url,
                 format_spec="bestaudio[ext=m4a]/bestaudio/best",
                 format_sort=["abr", "proto"],
@@ -854,7 +986,8 @@ def _android_download_media(
                 info=info,
             )
             reporter.progress_done()
-            return DownloadResult("completed", output_dir)
+            filename = saved.name if saved else f"{safe_title} [{ORIGINAL_AUDIO}] [{vid}].m4a"
+            return DownloadResult("completed", output_dir, filename)
         except DownloadCancelled:
             reporter.progress_done()
             return DownloadResult("cancelled", output_dir)
@@ -869,7 +1002,7 @@ def _android_download_media(
     tmp_audio = output_dir / f".ytdl_a_{vid}_{quality}p.m4a"
 
     try:
-        reporter.stage(f"Downloading {quality}p video…")
+        reporter.stage(f"{stage_prefix}Downloading {quality}p video…")
         video_spec = (
             f"bestvideo[ext=mp4][height={quality}]"
             f"/bestvideo[ext=mp4][height<={quality}]"
@@ -888,7 +1021,7 @@ def _android_download_media(
         if cancel.is_set():
             raise DownloadCancelled()
 
-        reporter.stage("Downloading audio track…")
+        reporter.stage(f"{stage_prefix}Downloading audio track…")
         _download_single_stream(
             url=url,
             format_spec="bestaudio[ext=m4a]/bestaudio",
@@ -902,7 +1035,7 @@ def _android_download_media(
         if cancel.is_set():
             raise DownloadCancelled()
 
-        reporter.stage("Merging video and audio…")
+        reporter.stage(f"{stage_prefix}Merging video and audio…")
         try:
             _android_mux_mp4(tmp_video, tmp_audio, final_path)
         except Exception as mux_err:
@@ -961,6 +1094,9 @@ class YTDownloaderApp(toga.App):
         self.download_dir = configure_mobile_paths(self)
         setup_logging()
 
+        self.history_file = Path(self.paths.data) / "history.json"
+        self.history_items: list[dict] = self._load_history()
+
         self.ui_font = _resolve_ui_font()
         self.styler = _NativeStyler()
         self._current_width = 360
@@ -971,12 +1107,21 @@ class YTDownloaderApp(toga.App):
         self._raw_status_text = ""
 
         self.use_ffmpeg = bool(shutil.which("ffmpeg")) and not is_android()
+        self.active_tab = "downloader"  # "downloader" or "history"
         self.state = "idle"  # idle, fetching, ready, downloading, done
         self.mode = "video"  # "video" or "audio"
         self.url = ""
         self.info = None
         self.summary = None
         self.video_options: list[tuple[int, int | None]] = []
+
+        # Playlist state
+        self.is_playlist = False
+        self.playlist_data: dict | None = None
+        self.playlist_selected: set[int] = set()
+        self.playlist_item_buttons: list[tuple[int, toga.Button]] = []
+
+        # Quality pills state
         self.quality_buttons: list[tuple[object, str, toga.Button]] = []
         self.selected_quality = None
         self.cancel_event: threading.Event | None = None
@@ -1001,6 +1146,54 @@ class YTDownloaderApp(toga.App):
     def call_on_ui(self, func, *args):
         self.loop.call_soon_threadsafe(func, *args)
 
+    # ── History persistence ──────────────────────────────────────────────
+
+    def _load_history(self) -> list[dict]:
+        try:
+            if self.history_file.is_file():
+                data = json.loads(self.history_file.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return data[:MAX_HISTORY_ITEMS]
+        except Exception:
+            pass
+        return []
+
+    def _save_history(self):
+        try:
+            self.history_file.parent.mkdir(parents=True, exist_ok=True)
+            self.history_file.write_text(
+                json.dumps(self.history_items[:MAX_HISTORY_ITEMS], indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _record_history(self, title: str, kind: str, quality_str: str, file_path: Path):
+        entry = {
+            "id": str(int(time.time() * 1000)),
+            "title": title,
+            "kind": kind,
+            "quality": quality_str,
+            "path": str(file_path),
+            "timestamp": datetime.now().strftime("%b %d, %I:%M %p"),
+        }
+        # Avoid duplicate consecutive entries for the exact same file path
+        self.history_items = [
+            item for item in self.history_items if item.get("path") != str(file_path)
+        ]
+        self.history_items.insert(0, entry)
+        self.history_items = self.history_items[:MAX_HISTORY_ITEMS]
+        self._save_history()
+        self._update_history_tab_label()
+        if self.active_tab == "history":
+            self._render_history_list()
+
+    def _update_history_tab_label(self):
+        count = len(self.history_items)
+        self.tab_history_btn.text = f"History ({count})" if count else "History"
+
+    # ── Responsive layout ────────────────────────────────────────────────
+
     def on_window_resize(self, window, **kwargs):
         detected_dp = _android_screen_width_dp(self.status_label)
         width = detected_dp or getattr(window.size, "width", 0)
@@ -1024,6 +1217,8 @@ class YTDownloaderApp(toga.App):
             self.status_label.refresh()
         self.content_box.refresh()
 
+    # ── UI Construction ──────────────────────────────────────────────────
+
     def _build_ui(self):
         f = self.ui_font
         self._cards: list[toga.Box] = []
@@ -1034,7 +1229,7 @@ class YTDownloaderApp(toga.App):
 
         # 1. Header bar (time-based greeting + active theme pill)
         self.header_box = toga.Box(
-            style=Pack(direction=ROW, align_items=CENTER, gap=10, margin_bottom=4)
+            style=Pack(direction=ROW, align_items=CENTER, gap=10, margin_bottom=2)
         )
         greeting, subtitle = _time_greeting()
         self.greeting_label = toga.Label(
@@ -1066,7 +1261,35 @@ class YTDownloaderApp(toga.App):
         self._secondary_buttons.append(self.theme_button)
         self.header_box.add(self.theme_button)
 
-        # 2. URL input card
+        # 2. Top Navigation Tabs (Downloader | History)
+        self.tab_downloader_btn = toga.Button(
+            "Downloader",
+            on_press=lambda _w: self._switch_tab("downloader"),
+            style=Pack(
+                font_family=f,
+                flex=1,
+                height=38,
+                font_size=11,
+                font_weight=BOLD,
+            ),
+        )
+        self.tab_history_btn = toga.Button(
+            "History",
+            on_press=lambda _w: self._switch_tab("history"),
+            style=Pack(
+                font_family=f,
+                flex=1,
+                height=38,
+                font_size=11,
+                font_weight=BOLD,
+            ),
+        )
+        self._update_history_tab_label()
+        self.nav_bar = toga.Box(style=Pack(direction=ROW, gap=10))
+        self.nav_bar.add(self.tab_downloader_btn)
+        self.nav_bar.add(self.tab_history_btn)
+
+        # 3. URL input card
         url_caption = toga.Label(
             "YOUTUBE LINK",
             style=Pack(font_family=f, font_size=9, font_weight=BOLD),
@@ -1074,13 +1297,13 @@ class YTDownloaderApp(toga.App):
         self._muted_labels.append(url_caption)
 
         self.url_input = toga.TextInput(
-            placeholder="Paste a YouTube video link…",
+            placeholder="Paste a video or playlist link…",
             on_change=self.on_url_edited,
             on_confirm=self.on_fetch_pressed,
             style=Pack(font_family=f, font_size=11, height=42),
         )
         self.fetch_button = toga.Button(
-            "Fetch Video",
+            "Fetch",
             on_press=self.on_fetch_pressed,
             style=Pack(
                 font_family=f,
@@ -1115,7 +1338,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.url_card)
         self._card_inners.extend([url_inner, url_actions])
 
-        # 3. Media preview card
+        # 4. Single Video Preview card
         self.thumb_view = toga.ImageView(style=Pack(height=176, flex=1))
         thumb_wrap = toga.Box(
             style=Pack(direction=ROW, align_items=CENTER, margin_bottom=4)
@@ -1143,7 +1366,53 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.preview_card)
         self._card_inners.extend([preview_inner, thumb_wrap])
 
-        # 4. Format & Quality card (tappable high-contrast pill grid)
+        # 5. Playlist Selection card
+        self.playlist_title_label = toga.Label(
+            "",
+            style=Pack(font_family=f, font_size=13, font_weight=BOLD),
+        )
+        self.playlist_meta_label = toga.Label(
+            "",
+            style=Pack(font_family=f, font_size=10),
+        )
+        _enable_android_multiline(self.playlist_title_label, max_lines=3)
+        self._primary_labels.append(self.playlist_title_label)
+        self._muted_labels.append(self.playlist_meta_label)
+
+        self.pl_select_all_btn = toga.Button(
+            "Select All",
+            on_press=self.on_playlist_select_all,
+            style=Pack(
+                font_family=f, flex=1, height=34, font_size=10, font_weight=BOLD
+            ),
+        )
+        self.pl_select_none_btn = toga.Button(
+            "Clear Selection",
+            on_press=self.on_playlist_select_none,
+            style=Pack(
+                font_family=f, flex=1, height=34, font_size=10, font_weight=BOLD
+            ),
+        )
+        self._secondary_buttons.extend([self.pl_select_all_btn, self.pl_select_none_btn])
+
+        pl_actions = toga.Box(style=Pack(direction=ROW, gap=10, margin_top=4))
+        pl_actions.add(self.pl_select_all_btn)
+        pl_actions.add(self.pl_select_none_btn)
+
+        self.playlist_items_box = toga.Box(
+            style=Pack(direction=COLUMN, gap=6, margin_top=6)
+        )
+
+        playlist_inner = toga.Box(style=Pack(direction=COLUMN, gap=6))
+        playlist_inner.add(self.playlist_title_label)
+        playlist_inner.add(self.playlist_meta_label)
+        playlist_inner.add(pl_actions)
+        playlist_inner.add(self.playlist_items_box)
+        self.playlist_card = _make_card(playlist_inner)
+        self._cards.append(self.playlist_card)
+        self._card_inners.extend([playlist_inner, pl_actions, self.playlist_items_box])
+
+        # 6. Format & Quality card
         format_caption = toga.Label(
             "FORMAT",
             style=Pack(font_family=f, font_size=9, font_weight=BOLD),
@@ -1200,7 +1469,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.options_card)
         self._card_inners.extend([options_inner, mode_row, self.quality_grid])
 
-        # 5. Save Location card
+        # 7. Save Location card
         save_caption = toga.Label(
             "SAVE LOCATION",
             style=Pack(font_family=f, flex=1, font_size=9, font_weight=BOLD),
@@ -1240,7 +1509,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.folder_card)
         self._card_inners.extend([self.folder_inner, save_header_row])
 
-        # 6. Primary Download CTA
+        # 8. Primary Download CTA
         self.download_button = toga.Button(
             "Download",
             on_press=self.on_download_pressed,
@@ -1253,7 +1522,7 @@ class YTDownloaderApp(toga.App):
             ),
         )
 
-        # 7. Progress card
+        # 9. Progress card
         self.stage_label = toga.Label(
             "",
             style=Pack(font_family=f, flex=1, font_size=11, font_weight=BOLD),
@@ -1302,7 +1571,7 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.progress_card)
         self._card_inners.extend([progress_inner, progress_top])
 
-        # 8. Status banner card (explicitly wrapped with newlines for portrait mode)
+        # 10. Status banner card
         self.status_label = toga.Label(
             "",
             style=Pack(font_family=f, font_size=11, font_weight=BOLD),
@@ -1314,15 +1583,78 @@ class YTDownloaderApp(toga.App):
         self._cards.append(self.status_card)
         self._card_inners.append(status_inner)
 
+        # 11. History View container
+        self.history_header_label = toga.Label(
+            "DOWNLOAD HISTORY",
+            style=Pack(font_family=f, flex=1, font_size=9, font_weight=BOLD),
+        )
+        self._muted_labels.append(self.history_header_label)
+
+        self.clear_history_btn = toga.Button(
+            "Clear All",
+            on_press=self.on_clear_history,
+            style=Pack(
+                font_family=f, width=96, height=32, font_size=10, font_weight=BOLD
+            ),
+        )
+        self._secondary_buttons.append(self.clear_history_btn)
+
+        self.history_top_row = toga.Box(
+            style=Pack(direction=ROW, align_items=CENTER, gap=8)
+        )
+        self.history_top_row.add(self.history_header_label)
+        self.history_top_row.add(self.clear_history_btn)
+
+        self.history_list_box = toga.Box(style=Pack(direction=COLUMN, gap=10))
+
+        self.history_container = toga.Box(style=Pack(direction=COLUMN, gap=10))
+        self.history_container.add(self.history_top_row)
+        self.history_container.add(self.history_list_box)
+
         # Responsive vertical container inside ScrollContainer
         self.content_box = toga.Box(
             style=Pack(direction=COLUMN, margin=(14, 14, 24, 14), gap=12)
         )
         self.content_box.add(self.header_box)
-        self.content_box.add(self.url_card)
+        self.content_box.add(self.nav_bar)
 
         self.root_scroll = toga.ScrollContainer(
             content=self.content_box, horizontal=False
+        )
+
+    # ── Tabs & Theming ───────────────────────────────────────────────────
+
+    def _switch_tab(self, tab_name: str):
+        if self.active_tab == tab_name:
+            return
+        self.active_tab = tab_name
+        self._style_nav_tabs()
+        if tab_name == "history":
+            self._render_history_list()
+        self._rebuild_visible_sections()
+
+    def _style_nav_tabs(self):
+        t = THEMES[self.theme_name]
+        is_dl = self.active_tab == "downloader"
+
+        dl_bg = t["accent"] if is_dl else t["secondary_bg"]
+        dl_fg = t["accent_text"] if is_dl else t["secondary_text"]
+        dl_bd = t["accent_border"] if is_dl else t["border"]
+
+        h_bg = t["accent"] if not is_dl else t["secondary_bg"]
+        h_fg = t["accent_text"] if not is_dl else t["secondary_text"]
+        h_bd = t["accent_border"] if not is_dl else t["border"]
+
+        self.tab_downloader_btn.style.background_color = dl_bg
+        self.tab_downloader_btn.style.color = dl_fg
+        self.styler.apply(
+            self.tab_downloader_btn, dl_bg, dl_bd, radius=10, is_button=True
+        )
+
+        self.tab_history_btn.style.background_color = h_bg
+        self.tab_history_btn.style.color = h_fg
+        self.styler.apply(
+            self.tab_history_btn, h_bg, h_bd, radius=10, is_button=True
         )
 
     def on_cycle_theme(self, widget):
@@ -1339,15 +1671,23 @@ class YTDownloaderApp(toga.App):
             self, t["bar_bg"], t["text"], t["is_light"]
         )
 
-        self.root_scroll.style.background_color = t["page_bg"]
-        self.content_box.style.background_color = t["page_bg"]
-        self.header_box.style.background_color = t["page_bg"]
-        self.title_col.style.background_color = t["page_bg"]
+        for box in (
+            self.root_scroll,
+            self.content_box,
+            self.header_box,
+            self.title_col,
+            self.nav_bar,
+            self.history_container,
+            self.history_top_row,
+            self.history_list_box,
+        ):
+            box.style.background_color = t["page_bg"]
 
         self.greeting_label.style.color = t["text"]
         self.greeting_label.style.background_color = t["page_bg"]
         self.greeting_sub_label.style.color = t["muted"]
         self.greeting_sub_label.style.background_color = t["page_bg"]
+        self.history_header_label.style.background_color = t["page_bg"]
 
         self.theme_button.text = t["badge_text"]
 
@@ -1362,8 +1702,9 @@ class YTDownloaderApp(toga.App):
             lbl.style.color = t["text"]
             lbl.style.background_color = t["card_bg"]
         for lbl in self._muted_labels:
+            if lbl is not self.history_header_label:
+                lbl.style.background_color = t["card_bg"]
             lbl.style.color = t["muted"]
-            lbl.style.background_color = t["card_bg"]
         for btn in self._secondary_buttons:
             btn.style.background_color = t["secondary_bg"]
             btn.style.color = t["secondary_text"]
@@ -1408,8 +1749,12 @@ class YTDownloaderApp(toga.App):
         )
         _enable_android_multiline(self.status_label, max_lines=12)
 
+        self._style_nav_tabs()
         self._style_mode_buttons()
         self._style_quality_buttons()
+        self._style_playlist_items()
+        if self.active_tab == "history":
+            self._render_history_list()
 
     def _style_mode_buttons(self):
         t = THEMES[self.theme_name]
@@ -1445,6 +1790,167 @@ class YTDownloaderApp(toga.App):
             self.styler.apply(btn, bg, bd, radius=10, is_button=True)
             if active:
                 self.quality_detail_label.text = f"Selected: {detail}"
+
+    def _style_playlist_items(self):
+        t = THEMES[self.theme_name]
+        for idx, btn in self.playlist_item_buttons:
+            selected = idx in self.playlist_selected
+            bg = t["accent"] if selected else t["secondary_bg"]
+            fg = t["accent_text"] if selected else t["secondary_text"]
+            bd = t["accent_border"] if selected else t["border"]
+            btn.style.background_color = bg
+            btn.style.color = fg
+            self.styler.apply(
+                btn, bg, bd, radius=10, is_button=True, left_align=True
+            )
+
+    # ── History View Rendering ───────────────────────────────────────────
+
+    def _render_history_list(self):
+        t = THEMES[self.theme_name]
+        f = self.ui_font
+
+        for child in list(self.history_list_box.children):
+            self.history_list_box.remove(child)
+
+        if not self.history_items:
+            empty_lbl = toga.Label(
+                "No downloads yet.\nDownloaded videos and audio will appear here.",
+                style=Pack(
+                    font_family=f,
+                    font_size=11,
+                    color=t["muted"],
+                    background_color=t["card_bg"],
+                ),
+            )
+            _enable_android_multiline(empty_lbl, max_lines=3)
+            empty_inner = toga.Box(
+                style=Pack(direction=COLUMN, background_color=t["card_bg"])
+            )
+            empty_inner.add(empty_lbl)
+            empty_card = _make_card(empty_inner)
+            empty_card.style.background_color = t["card_bg"]
+            self.styler.apply(empty_card, t["card_bg"], t["border"], radius=14)
+            self.history_list_box.add(empty_card)
+            self.history_list_box.refresh()
+            return
+
+        for item in self.history_items:
+            kind = item.get("kind", "video")
+            quality = item.get("quality", "")
+            ts = item.get("timestamp", "")
+            path_str = item.get("path", "")
+            title = item.get("title", "Untitled")
+
+            badge_text = (
+                f"AUDIO · {quality}  ·  {ts}"
+                if kind == "audio"
+                else f"VIDEO · {quality}  ·  {ts}"
+            )
+            badge_lbl = toga.Label(
+                badge_text,
+                style=Pack(
+                    font_family=f,
+                    font_size=9,
+                    font_weight=BOLD,
+                    color=t["muted"],
+                    background_color=t["card_bg"],
+                ),
+            )
+            title_lbl = toga.Label(
+                _wrap_text(title, self._current_width, char_dp=9.0),
+                style=Pack(
+                    font_family=f,
+                    font_size=12,
+                    font_weight=BOLD,
+                    color=t["text"],
+                    background_color=t["card_bg"],
+                ),
+            )
+            _enable_android_multiline(title_lbl, max_lines=3)
+
+            play_label = "▶ Play Audio" if kind == "audio" else "▶ Play Video"
+            play_btn = toga.Button(
+                play_label,
+                on_press=lambda _w, p=path_str, k=kind: self._on_play_history_item(
+                    p, k
+                ),
+                style=Pack(
+                    font_family=f,
+                    flex=1,
+                    height=36,
+                    font_size=11,
+                    font_weight=BOLD,
+                    background_color=t["accent"],
+                    color=t["accent_text"],
+                ),
+            )
+            self.styler.apply(
+                play_btn, t["accent"], t["accent_border"], radius=10, is_button=True
+            )
+
+            remove_btn = toga.Button(
+                "Remove",
+                on_press=lambda _w, p=path_str: self._on_remove_history_item(p),
+                style=Pack(
+                    font_family=f,
+                    width=88,
+                    height=36,
+                    font_size=10,
+                    font_weight=BOLD,
+                    background_color=t["secondary_bg"],
+                    color=t["secondary_text"],
+                ),
+            )
+            self.styler.apply(
+                remove_btn, t["secondary_bg"], t["border"], radius=10, is_button=True
+            )
+
+            btn_row = toga.Box(
+                style=Pack(
+                    direction=ROW,
+                    gap=10,
+                    margin_top=4,
+                    background_color=t["card_bg"],
+                )
+            )
+            btn_row.add(play_btn)
+            btn_row.add(remove_btn)
+
+            inner = toga.Box(
+                style=Pack(direction=COLUMN, gap=5, background_color=t["card_bg"])
+            )
+            inner.add(badge_lbl)
+            inner.add(title_lbl)
+            inner.add(btn_row)
+
+            card = _make_card(inner)
+            card.style.background_color = t["card_bg"]
+            self.styler.apply(card, t["card_bg"], t["border"], radius=14)
+            self.history_list_box.add(card)
+
+        self.history_list_box.refresh()
+
+    def _on_play_history_item(self, path_str: str, kind: str):
+        err = _open_media_file(self, Path(path_str), kind)
+        if err:
+            self.show_status(err, "error")
+
+    def _on_remove_history_item(self, path_str: str):
+        self.history_items = [
+            item for item in self.history_items if item.get("path") != path_str
+        ]
+        self._save_history()
+        self._update_history_tab_label()
+        self._render_history_list()
+
+    def on_clear_history(self, widget):
+        self.history_items = []
+        self._save_history()
+        self._update_history_tab_label()
+        self._render_history_list()
+
+    # ── Folder Selection ─────────────────────────────────────────────────
 
     async def on_change_folder(self, widget):
         if self.state in ("fetching", "downloading"):
@@ -1513,27 +2019,56 @@ class YTDownloaderApp(toga.App):
         self._refresh_responsive_text()
         self.show_status("Save folder updated.", "success")
 
-    def _rebuild_visible_sections(self):
-        busy = self.state in ("fetching", "downloading")
-        has_media = self.state in ("ready", "downloading", "done")
-        editable = self.state in ("ready", "done")
+    # ── State & Section Visibility ───────────────────────────────────────
 
-        desired = [self.header_box, self.url_card]
-        if has_media:
-            desired.append(self.preview_card)
-            desired.append(self.options_card)
-        desired.append(self.folder_card)
-        if editable:
-            desired.append(self.download_button)
-        if busy:
-            desired.append(self.progress_card)
-        if self._raw_status_text:
-            desired.append(self.status_card)
+    def _rebuild_visible_sections(self):
+        desired = [self.header_box, self.nav_bar]
+
+        if self.active_tab == "history":
+            desired.append(self.history_container)
+            if self._raw_status_text:
+                desired.append(self.status_card)
+        else:
+            busy = self.state in ("fetching", "downloading")
+            has_media = self.state in ("ready", "downloading", "done")
+            editable = self.state in ("ready", "done")
+
+            desired.append(self.url_card)
+            if has_media:
+                if self.is_playlist:
+                    desired.append(self.playlist_card)
+                else:
+                    desired.append(self.preview_card)
+                desired.append(self.options_card)
+            desired.append(self.folder_card)
+            if editable:
+                desired.append(self.download_button)
+            if busy:
+                desired.append(self.progress_card)
+            if self._raw_status_text:
+                desired.append(self.status_card)
 
         for child in list(self.content_box.children)[2:]:
             self.content_box.remove(child)
         for child in desired[2:]:
             self.content_box.add(child)
+
+    def _update_download_cta_text(self):
+        if self.is_playlist:
+            count = len(self.playlist_selected)
+            self.download_button.text = (
+                f"Download Selected ({count})" if count else "Select videos to download"
+            )
+            self.download_button.enabled = (
+                self.state in ("ready", "done")
+                and count > 0
+                and self.selected_quality is not None
+            )
+        else:
+            self.download_button.text = "Download"
+            self.download_button.enabled = (
+                self.state in ("ready", "done") and self.selected_quality is not None
+            )
 
     def _set_state(self, state: str):
         self.state = state
@@ -1542,15 +2077,20 @@ class YTDownloaderApp(toga.App):
 
         self.url_input.enabled = not busy
         self.fetch_button.enabled = not busy
-        self.fetch_button.text = "Fetching…" if state == "fetching" else "Fetch Video"
+        self.fetch_button.text = "Fetching…" if state == "fetching" else "Fetch"
         self.clear_button.enabled = not busy
         self.change_folder_btn.enabled = not busy
 
         self.video_mode_btn.enabled = editable
         self.audio_mode_btn.enabled = editable
+        self.pl_select_all_btn.enabled = editable
+        self.pl_select_none_btn.enabled = editable
         for _, _, btn in self.quality_buttons:
             btn.enabled = editable
-        self.download_button.enabled = editable and self.selected_quality is not None
+        for _, btn in self.playlist_item_buttons:
+            btn.enabled = editable
+
+        self._update_download_cta_text()
 
         self.cancel_button.enabled = state == "downloading"
         self.cancel_button.text = "Cancel Download"
@@ -1583,21 +2123,28 @@ class YTDownloaderApp(toga.App):
         self._rebuild_visible_sections()
         self.content_box.refresh()
 
+    # ── Fetching (Single Video or Playlist) ──────────────────────────────
+
     def on_url_edited(self, widget):
         if self.state in ("ready", "done"):
-            self.info = None
-            self.summary = None
-            self.video_options = []
+            self._reset_media_state()
             self.show_status("")
             self._set_state("idle")
 
     def on_clear_pressed(self, widget):
         self.url_input.value = ""
+        self._reset_media_state()
+        self.show_status("")
+        self._set_state("idle")
+
+    def _reset_media_state(self):
         self.info = None
         self.summary = None
         self.video_options = []
-        self.show_status("")
-        self._set_state("idle")
+        self.is_playlist = False
+        self.playlist_data = None
+        self.playlist_selected = set()
+        self.playlist_item_buttons = []
 
     def on_fetch_pressed(self, widget):
         if self.state in ("fetching", "downloading"):
@@ -1605,12 +2152,15 @@ class YTDownloaderApp(toga.App):
 
         url = (self.url_input.value or "").strip()
         if not url:
-            self.show_status("Paste a YouTube link first.", "error")
+            self.show_status("Paste a YouTube video or playlist link first.", "error")
             return
 
         self.url = url
+        self._reset_media_state()
         self.show_status("")
-        self.stage_label.text = "Fetching video details…"
+        self.stage_label.text = (
+            "Fetching playlist…" if _is_playlist_url(url) else "Fetching video details…"
+        )
         self.progress_label.text = ""
         self._set_state("fetching")
 
@@ -1620,6 +2170,11 @@ class YTDownloaderApp(toga.App):
 
     def _fetch_worker(self, url: str):
         try:
+            if _is_playlist_url(url):
+                pl_data = _fetch_playlist_flat(url)
+                self.call_on_ui(self.on_playlist_fetched, pl_data)
+                return
+
             info = (
                 _android_fetch_info(url)
                 if is_android()
@@ -1630,11 +2185,13 @@ class YTDownloaderApp(toga.App):
             thumb_url = _pick_jpeg_thumbnail_url(info, summary.thumbnail)
             thumb_bytes = _fetch_thumbnail_bytes(thumb_url)
         except PlaylistLinkError:
-            self.call_on_ui(
-                self.on_fetch_failed,
-                "Playlist support is coming next—paste a single video link for now.",
-            )
-            return
+            try:
+                pl_data = _fetch_playlist_flat(url)
+                self.call_on_ui(self.on_playlist_fetched, pl_data)
+                return
+            except Exception as err:
+                self.call_on_ui(self.on_fetch_failed, str(err))
+                return
         except DownloadError as error:
             self.call_on_ui(self.on_fetch_failed, str(error))
             return
@@ -1646,6 +2203,7 @@ class YTDownloaderApp(toga.App):
         self.call_on_ui(self.on_fetched, info, summary, options, thumb_bytes)
 
     def on_fetched(self, info, summary, options, thumb_bytes):
+        self.is_playlist = False
         self.info = info
         self.summary = summary
         self.video_options = options
@@ -1669,16 +2227,106 @@ class YTDownloaderApp(toga.App):
         self.show_status("")
         self._set_state("ready")
 
+    def on_playlist_fetched(self, pl_data: dict):
+        self.is_playlist = True
+        self.playlist_data = pl_data
+        entries = pl_data["entries"]
+        self.playlist_selected = {e["index"] for e in entries}
+
+        self.playlist_title_label.text = _wrap_text(
+            pl_data["title"], self._current_width, char_dp=9.2
+        )
+        self.playlist_meta_label.text = (
+            f"{pl_data['uploader']}  ·  {len(entries)} videos"
+        )
+
+        for child in list(self.playlist_items_box.children):
+            self.playlist_items_box.remove(child)
+        self.playlist_item_buttons = []
+
+        f = self.ui_font
+        for entry in entries:
+            idx = entry["index"]
+            dur = format_duration(entry["duration"]) if entry.get("duration") else ""
+            raw_title = entry["title"]
+            short_title = raw_title if len(raw_title) <= 36 else f"{raw_title[:35]}…"
+            label = f"✓ {idx}. {short_title}" + (f" ({dur})" if dur else "")
+
+            btn = toga.Button(
+                label,
+                on_press=lambda _w, i=idx, st=short_title, d=dur: self._on_toggle_playlist_item(
+                    i, st, d
+                ),
+                style=Pack(
+                    font_family=f,
+                    height=38,
+                    font_size=10,
+                    font_weight=BOLD,
+                ),
+            )
+            self.playlist_items_box.add(btn)
+            self.playlist_item_buttons.append((idx, btn))
+
+        self._style_playlist_items()
+        self._populate_quality()
+        self.show_status("")
+        self._set_state("ready")
+
+    def _on_toggle_playlist_item(self, idx: int, short_title: str, dur: str):
+        if self.state not in ("ready", "done"):
+            return
+        if idx in self.playlist_selected:
+            self.playlist_selected.remove(idx)
+            mark = "○"
+        else:
+            self.playlist_selected.add(idx)
+            mark = "✓"
+
+        for item_idx, btn in self.playlist_item_buttons:
+            if item_idx == idx:
+                btn.text = f"{mark} {idx}. {short_title}" + (f" ({dur})" if dur else "")
+                break
+        self._style_playlist_items()
+        self._update_download_cta_text()
+
+    def on_playlist_select_all(self, widget):
+        if not self.playlist_data or self.state not in ("ready", "done"):
+            return
+        entries = self.playlist_data["entries"]
+        self.playlist_selected = {e["index"] for e in entries}
+        for (idx, btn), entry in zip(self.playlist_item_buttons, entries):
+            dur = format_duration(entry["duration"]) if entry.get("duration") else ""
+            raw_title = entry["title"]
+            short_title = raw_title if len(raw_title) <= 36 else f"{raw_title[:35]}…"
+            btn.text = f"✓ {idx}. {short_title}" + (f" ({dur})" if dur else "")
+        self._style_playlist_items()
+        self._update_download_cta_text()
+
+    def on_playlist_select_none(self, widget):
+        if not self.playlist_data or self.state not in ("ready", "done"):
+            return
+        entries = self.playlist_data["entries"]
+        self.playlist_selected.clear()
+        for (idx, btn), entry in zip(self.playlist_item_buttons, entries):
+            dur = format_duration(entry["duration"]) if entry.get("duration") else ""
+            raw_title = entry["title"]
+            short_title = raw_title if len(raw_title) <= 36 else f"{raw_title[:35]}…"
+            btn.text = f"○ {idx}. {short_title}" + (f" ({dur})" if dur else "")
+        self._style_playlist_items()
+        self._update_download_cta_text()
+
     def on_fetch_failed(self, message: str):
         self.show_status(message, "error")
         self._set_state("idle")
+
+    # ── Format & Quality Selection ───────────────────────────────────────
 
     def on_select_video_mode(self, widget):
         if self.mode == "video":
             return
         self.mode = "video"
         self._style_mode_buttons()
-        if self.info is not None:
+        if self.info is not None or self.playlist_data is not None:
             self._populate_quality()
 
     def on_select_audio_mode(self, widget):
@@ -1686,7 +2334,7 @@ class YTDownloaderApp(toga.App):
             return
         self.mode = "audio"
         self._style_mode_buttons()
-        if self.info is not None:
+        if self.info is not None or self.playlist_data is not None:
             self._populate_quality()
 
     def _on_quality_pill_pressed(self, value):
@@ -1694,7 +2342,7 @@ class YTDownloaderApp(toga.App):
             return
         self.selected_quality = value
         self._style_quality_buttons()
-        self.download_button.enabled = self.selected_quality is not None
+        self._update_download_cta_text()
 
     def _populate_quality(self):
         settings = load_settings()
@@ -1706,19 +2354,25 @@ class YTDownloaderApp(toga.App):
             self.quality_grid.remove(child)
         self.quality_buttons = []
 
-        # entries: list of (value, short_pill_label, full_detail_label)
         entries: list[tuple[object, str, str]] = []
 
         if is_video:
-            self.quality_caption.text = "VIDEO QUALITY"
-            options = self.video_options or [(720, None), (480, None), (360, None)]
-            for height, size in options:
-                detail = f"{height}p MP4"
-                if size:
-                    detail += f"  ·  ~{format_file_size(size)}"
-                entries.append((height, f"{height}p", detail))
+            self.quality_caption.text = (
+                "MAX VIDEO QUALITY" if self.is_playlist else "VIDEO QUALITY"
+            )
+            if self.is_playlist:
+                for height in PLAYLIST_QUALITIES:
+                    entries.append((height, f"{height}p", f"Up to {height}p MP4"))
+                cols = 2
+            else:
+                options = self.video_options or [(720, None), (480, None), (360, None)]
+                for height, size in options:
+                    detail = f"{height}p MP4"
+                    if size:
+                        detail += f"  ·  ~{format_file_size(size)}"
+                    entries.append((height, f"{height}p", detail))
+                cols = 3
             saved = settings.get("video_quality")
-            cols = 3
         else:
             self.quality_caption.text = "AUDIO FORMAT"
             if self.use_ffmpeg:
@@ -1776,11 +2430,16 @@ class YTDownloaderApp(toga.App):
             self.quality_grid.add(row)
 
         self._style_quality_buttons()
-        self.download_button.enabled = self.selected_quality is not None
+        self._update_download_cta_text()
         self.quality_grid.refresh()
+
+    # ── Download Execution ───────────────────────────────────────────────
 
     def on_download_pressed(self, widget):
         if self.state not in ("ready", "done") or self.selected_quality is None:
+            return
+        if self.is_playlist and not self.playlist_selected:
+            self.show_status("Select at least one video from the playlist.", "warning")
             return
 
         setting = self.selected_quality
@@ -1795,11 +2454,29 @@ class YTDownloaderApp(toga.App):
         self.progress_bar.start()
         self._set_state("downloading")
 
-        threading.Thread(
-            target=self._download_worker,
-            args=(self.url, kind, setting, self.info, self.cancel_event),
-            daemon=True,
-        ).start()
+        if self.is_playlist and self.playlist_data is not None:
+            selected_entries = [
+                e
+                for e in self.playlist_data["entries"]
+                if e["index"] in self.playlist_selected
+            ]
+            threading.Thread(
+                target=self._playlist_download_worker,
+                args=(
+                    self.playlist_data["title"],
+                    selected_entries,
+                    kind,
+                    setting,
+                    self.cancel_event,
+                ),
+                daemon=True,
+            ).start()
+        else:
+            threading.Thread(
+                target=self._download_worker,
+                args=(self.url, kind, setting, self.info, self.cancel_event),
+                daemon=True,
+            ).start()
 
     def _download_worker(self, url, kind, setting, info, cancel):
         reporter = TogaReporter(self)
@@ -1839,7 +2516,102 @@ class YTDownloaderApp(toga.App):
             self.call_on_ui(self.on_download_failed, msg)
             return
 
-        self.call_on_ui(self.on_download_done, result, kind, setting)
+        title = (info or {}).get("title") or "Downloaded media"
+        self.call_on_ui(self.on_download_done, result, kind, setting, title)
+
+    def _playlist_download_worker(
+        self,
+        playlist_title: str,
+        entries: list[dict],
+        kind: str,
+        setting,
+        cancel: threading.Event,
+    ):
+        reporter = TogaReporter(self)
+        safe_pl = (
+            yt_dlp.utils.sanitize_filename(playlist_title, restricted=False).strip()[
+                :60
+            ]
+            or "Playlist"
+        )
+        pl_dir = self.download_dir / safe_pl
+        pl_dir.mkdir(parents=True, exist_ok=True)
+
+        total = len(entries)
+        completed = 0
+        skipped = 0
+        failed = 0
+
+        for pos, entry in enumerate(entries, start=1):
+            if cancel.is_set():
+                break
+
+            prefix = f"[{pos}/{total}] "
+            reporter.stage(f"{prefix}Fetching {entry['title'][:24]}…")
+
+            try:
+                item_info = (
+                    _android_fetch_info(entry["url"])
+                    if is_android()
+                    else fetch_video_info(entry["url"])
+                )
+                if self.use_ffmpeg:
+                    fn = download_video if kind == "video" else download_audio
+                    result = fn(
+                        entry["url"],
+                        setting,
+                        output_dir=pl_dir,
+                        info=item_info,
+                        reporter=reporter,
+                        cancel=cancel,
+                    )
+                else:
+                    result = _android_download_media(
+                        entry["url"],
+                        kind,
+                        setting,
+                        pl_dir,
+                        reporter,
+                        cancel,
+                        info=item_info,
+                        stage_prefix=prefix,
+                    )
+
+                if result.status == "cancelled":
+                    break
+                if result.status == "exists":
+                    skipped += 1
+                else:
+                    completed += 1
+                    if result.filename:
+                        q_str = (
+                            "M4A"
+                            if kind == "audio"
+                            else f"{setting}p"
+                        )
+                        self.call_on_ui(
+                            self._record_history,
+                            entry["title"],
+                            kind,
+                            q_str,
+                            pl_dir / result.filename,
+                        )
+            except Exception as err:
+                logging.getLogger("ytdl").warning(
+                    "Playlist item %s failed: %s", entry["id"], err
+                )
+                failed += 1
+
+        reporter.progress_done()
+        self.call_on_ui(
+            self.on_playlist_download_done,
+            completed,
+            skipped,
+            failed,
+            cancel.is_set(),
+            kind,
+            setting,
+        )
 
     def on_cancel_pressed(self, widget):
         if self.cancel_event is not None:
@@ -1886,15 +2658,52 @@ class YTDownloaderApp(toga.App):
         self.progress_bar.value = 0
         self.progress_label.text = ""
 
-    def on_download_done(self, result: DownloadResult, kind: str, setting):
+    def on_download_done(
+        self, result: DownloadResult, kind: str, setting, title: str
+    ):
         if result.status == "completed":
             key = "video_quality" if kind == "video" else "audio_bitrate"
             remember_setting(key, setting)
-            self.show_status("Download complete.", "success")
+            if result.filename:
+                q_str = "M4A" if kind == "audio" else f"{setting}p"
+                self._record_history(
+                    title, kind, q_str, result.output_dir / result.filename
+                )
+            self.show_status("Download complete. Saved to History.", "success")
         elif result.status == "exists":
             self.show_status("Already downloaded.", "warning")
         else:
             self.show_status("Download cancelled.", "warning")
+
+        self._set_state("done")
+
+    def on_playlist_download_done(
+        self,
+        completed: int,
+        skipped: int,
+        failed: int,
+        cancelled: bool,
+        kind: str,
+        setting,
+    ):
+        if completed > 0:
+            key = "video_quality" if kind == "video" else "audio_bitrate"
+            remember_setting(key, setting)
+
+        parts = [f"{completed} downloaded"]
+        if skipped:
+            parts.append(f"{skipped} already existed")
+        if failed:
+            parts.append(f"{failed} failed")
+
+        summary = "Playlist finished: " + ", ".join(parts) + "."
+        if cancelled:
+            summary = "Playlist cancelled: " + ", ".join(parts) + "."
+            self.show_status(summary, "warning")
+        elif failed and completed == 0:
+            self.show_status(summary, "error")
+        else:
+            self.show_status(summary, "success")
 
         self._set_state("done")
 
