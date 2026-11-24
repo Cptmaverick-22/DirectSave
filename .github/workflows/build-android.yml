@@ -72,7 +72,7 @@ jobs:
 
           # Android 8+ adaptive icons (logo centered in 66/108 safe zone)
           for size in (108, 162, 216, 324, 432):
-              canvas = Image.new("RGBA", (size, size), (11, 11, 14, 255))
+              canvas = Image.new("RGBA", (size, size), (15, 17, 23, 255))
               inner = int(round(size * (66 / 108)))
               fg = img.resize((inner, inner), Image.Resampling.LANCZOS)
               offset = (size - inner) // 2
@@ -131,7 +131,7 @@ jobs:
 
           # Zipalign and sign with v2/v3 APK Signature Scheme
           ALIGNED_APK="$RUNNER_TEMP/aligned.apk"
-          SIGNED_APK="release-apk/YTDownloader-Android.apk"
+          SIGNED_APK="release-apk/DirectSave-Android.apk"
 
           "$BUILD_TOOLS_DIR/zipalign" -f -v -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
           "$BUILD_TOOLS_DIR/apksigner" sign \
@@ -150,15 +150,15 @@ jobs:
       - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YTDownloader-Android-APK
-          path: release-apk/YTDownloader-Android.apk
+          name: DirectSave-Android-APK
+          path: release-apk/DirectSave-Android.apk
           retention-days: 14
 
       - name: Attach signed APK to GitHub Release (on version tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: release-apk/YTDownloader-Android.apk
+          files: release-apk/DirectSave-Android.apk
 
       - name: Upload Briefcase logs on failure
         if: failure()

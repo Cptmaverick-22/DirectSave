@@ -68,7 +68,7 @@ def set_mobile_download_dir(new_path: str | Path) -> Path:
     if not writable:
         if is_android() and str(target).startswith(str(ANDROID_INTERNAL_ROOT)):
             raise PermissionError(
-                "Android blocked writing to that folder. Pick Download/YT Downloader "
+                f"Android blocked writing to that folder. Pick Download/{config.APP_NAME} "
                 "or grant All files access in App Settings."
             ) from last_exc
         raise PermissionError(
@@ -81,7 +81,7 @@ def set_mobile_download_dir(new_path: str | Path) -> Path:
 
 def _resolve_default_download_dir(fallback_root: Path) -> Path:
     """Resolve a reliable default download folder on Android and desktop."""
-    folder_name = config.APP_NAME  # "YT Downloader"
+    folder_name = config.APP_NAME
 
     if is_android():
         candidates = [
@@ -94,6 +94,19 @@ def _resolve_default_download_dir(fallback_root: Path) -> Path:
                 return candidate
 
     return fallback_root / folder_name
+
+
+def android_preset_dirs() -> list[tuple[str, Path]]:
+    """Return reliable quick-pick folders for Android and desktop previews."""
+    folder_name = config.APP_NAME
+    if is_android():
+        return [
+            ("Download folder", ANDROID_INTERNAL_ROOT / "Download" / folder_name),
+            ("Internal root", ANDROID_INTERNAL_ROOT / folder_name),
+        ]
+    return [
+        ("Downloads folder", Path.home() / "Downloads" / folder_name),
+    ]
 
 
 def friendly_path(path: Path) -> str:

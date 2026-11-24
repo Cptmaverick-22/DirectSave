@@ -4,7 +4,7 @@
   #define MyAppVersion "1.1"
 #endif
 
-#define MyAppName "YT Downloader"
+#define MyAppName "DirectSave"
 #define MyAppExeName "YTDownloader.exe"
 
 [Setup]
@@ -22,7 +22,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=dist\installer
-OutputBaseFilename=YTDownloader-Setup-{#MyAppVersion}
+OutputBaseFilename=DirectSave-Setup-{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

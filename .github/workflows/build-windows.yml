@@ -3,9 +3,8 @@ name: Build Windows GUI App
 on:
   workflow_dispatch:
   push:
-    tags: 
+    tags:
       - "v*"
-  
 
 jobs:
   build-windows:
@@ -101,7 +100,7 @@ jobs:
       - name: Upload Windows Installer (.exe)
         uses: actions/upload-artifact@v4
         with:
-          name: YTDownloader-Windows-Installer
+          name: DirectSave-Windows-Installer
           path: dist/installer/*.exe
 
       - name: Publish GitHub Release

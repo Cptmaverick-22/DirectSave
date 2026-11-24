@@ -1,4 +1,4 @@
-"""Dark and Light themes for YT Downloader (PySide6 / Fusion)."""
+"""Minimal, soothing themes for DirectSave (PySide6 / Fusion)."""
 
 from pathlib import Path
 import sys
@@ -9,72 +9,158 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 
 from config import load_settings, remember_setting
 
-VALID_THEMES = ("dark", "light")
+VALID_THEMES = ("midnight", "lavender", "ocean", "obsidian")
+
+THEME_META = {
+    "midnight": {"name": "Midnight Indigo", "badge": "✦ Midnight", "dark": True},
+    "lavender": {"name": "Lavender Mist", "badge": "☀ Lavender", "dark": False},
+    "ocean": {"name": "Nordic Ocean", "badge": "🌊 Ocean", "dark": True},
+    "obsidian": {"name": "Obsidian Crimson", "badge": "◆ Obsidian", "dark": True},
+}
+
+_LEGACY_THEME_MAP = {
+    "dark": "midnight",
+    "light": "lavender",
+}
 
 PALETTES = {
-    "dark": {
-        "bg": "#0F1117",
-        "surface": "#181B23",
-        "surface_alt": "#222633",
-        "border": "#2A2F3D",
-        "border_focus": "#3B82F6",
-        "divider": "#262B38",
-        "text": "#F3F4F6",
-        "text_muted": "#9CA3AF",
+    "midnight": {
+        "bg": "#0E1019",
+        "surface": "#171A27",
+        "surface_alt": "#1F2335",
+        "border": "#262A3E",
+        "border_focus": "#7464FF",
+        "divider": "#222638",
+        "text": "#F3F4FA",
+        "text_muted": "#8E93B2",
+        "accent": "#7464FF",
+        "accent_hover": "#8779FF",
+        "accent_pressed": "#5E4EE6",
+        "progress": "#10B981",
+        "btn_bg": "#1F2335",
+        "btn_hover": "#282D44",
+        "btn_border": "#303652",
+        "ghost_hover": "#1B1F30",
+        "danger": "#F87171",
+        "danger_hover": "#EF4444",
+        "input_bg": "#121420",
+        "selection": "#28264D",
+        "segment_bg": "#121420",
+        "segment_active": "#7464FF",
+        "segment_active_text": "#FFFFFF",
+        "scroll_handle": "#303652",
+        "check_bg": "#121420",
+        "check_border": "#464D70",
+        "check_fill": "#10B981",
+    },
+    "lavender": {
+        "bg": "#F3F1FA",
+        "surface": "#FFFFFF",
+        "surface_alt": "#EAE6F8",
+        "border": "#E2DDF5",
+        "border_focus": "#6D4AFF",
+        "divider": "#EBE7F8",
+        "text": "#171625",
+        "text_muted": "#6E6B8A",
+        "accent": "#6D4AFF",
+        "accent_hover": "#7F5EFF",
+        "accent_pressed": "#5734E8",
+        "progress": "#059669",
+        "btn_bg": "#F7F5FD",
+        "btn_hover": "#ECE8FA",
+        "btn_border": "#DCD6F2",
+        "ghost_hover": "#E8E4F7",
+        "danger": "#E11D48",
+        "danger_hover": "#BE123C",
+        "input_bg": "#FAF9FE",
+        "selection": "#E5DFFF",
+        "segment_bg": "#EAE6F8",
+        "segment_active": "#6D4AFF",
+        "segment_active_text": "#FFFFFF",
+        "scroll_handle": "#CBC3EB",
+        "check_bg": "#FFFFFF",
+        "check_border": "#B8B0DC",
+        "check_fill": "#059669",
+    },
+    "ocean": {
+        "bg": "#0B192C",
+        "surface": "#132640",
+        "surface_alt": "#1A3252",
+        "border": "#223C5E",
+        "border_focus": "#3898FF",
+        "divider": "#1D3554",
+        "text": "#F0F6FC",
+        "text_muted": "#8BA6C7",
+        "accent": "#3898FF",
+        "accent_hover": "#57AAFF",
+        "accent_pressed": "#227FE6",
+        "progress": "#10B981",
+        "btn_bg": "#1A3252",
+        "btn_hover": "#223F66",
+        "btn_border": "#2B4B75",
+        "ghost_hover": "#162C4A",
+        "danger": "#F87171",
+        "danger_hover": "#EF4444",
+        "input_bg": "#0E1F36",
+        "selection": "#1E3E66",
+        "segment_bg": "#0E1F36",
+        "segment_active": "#3898FF",
+        "segment_active_text": "#FFFFFF",
+        "scroll_handle": "#2B4B75",
+        "check_bg": "#0E1F36",
+        "check_border": "#3E628F",
+        "check_fill": "#10B981",
+    },
+    "obsidian": {
+        "bg": "#0B0B0E",
+        "surface": "#15161C",
+        "surface_alt": "#1E2029",
+        "border": "#272935",
+        "border_focus": "#E11D48",
+        "divider": "#222430",
+        "text": "#F4F4F6",
+        "text_muted": "#989AA6",
         "accent": "#E11D48",
         "accent_hover": "#F43F5E",
         "accent_pressed": "#BE123C",
-        "btn_bg": "#232735",
-        "btn_hover": "#2D3244",
-        "btn_border": "#343A4D",
-        "ghost_hover": "#1E222D",
-        "danger": "#EF4444",
+        "progress": "#E11D48",
+        "btn_bg": "#1E2029",
+        "btn_hover": "#282B37",
+        "btn_border": "#323645",
+        "ghost_hover": "#1A1C24",
+        "danger": "#F87171",
         "danger_hover": "#DC2626",
-        "input_bg": "#12141B",
-        "selection": "#28354D",
-        "segment_bg": "#12141B",
-        "segment_active": "#272C3B",
-        "scroll_handle": "#343A4D",
-        "check_bg": "#12141B",
-        "check_border": "#4B5563",
-    },
-    "light": {
-        "bg": "#F3F5F9",
-        "surface": "#FFFFFF",
-        "surface_alt": "#EBEEF4",
-        "border": "#DCE1EB",
-        "border_focus": "#2563EB",
-        "divider": "#E5E9F0",
-        "text": "#111827",
-        "text_muted": "#6B7280",
-        "accent": "#DC2626",
-        "accent_hover": "#EF4444",
-        "accent_pressed": "#B91C1C",
-        "btn_bg": "#FFFFFF",
-        "btn_hover": "#F3F4F6",
-        "btn_border": "#D1D5DB",
-        "ghost_hover": "#E5E9F0",
-        "danger": "#DC2626",
-        "danger_hover": "#B91C1C",
-        "input_bg": "#F9FAFB",
-        "selection": "#DBEAFE",
-        "segment_bg": "#EBEEF4",
-        "segment_active": "#FFFFFF",
-        "scroll_handle": "#CBD5E1",
-        "check_bg": "#FFFFFF",
-        "check_border": "#9CA3AF",
+        "input_bg": "#101116",
+        "selection": "#381D29",
+        "segment_bg": "#101116",
+        "segment_active": "#E11D48",
+        "segment_active_text": "#FFFFFF",
+        "scroll_handle": "#323645",
+        "check_bg": "#101116",
+        "check_border": "#484C5E",
+        "check_fill": "#E11D48",
     },
 }
 
 THEME_STATUS_COLORS = {
-    "dark": {"error": "#F87171", "warning": "#FBBF24", "success": "#4ADE80"},
-    "light": {"error": "#DC2626", "warning": "#D97706", "success": "#16A34A"},
+    "midnight": {"error": "#F87171", "warning": "#FBBF24", "success": "#34D399"},
+    "lavender": {"error": "#DC2626", "warning": "#D97706", "success": "#059669"},
+    "ocean": {"error": "#F87171", "warning": "#FBBF24", "success": "#34D399"},
+    "obsidian": {"error": "#F87171", "warning": "#FBBF24", "success": "#4ADE80"},
 }
+
+
+def normalize_theme(theme: str | None) -> str:
+    """Resolve current or legacy theme names to a valid theme key."""
+    if not theme:
+        return "midnight"
+    mapped = _LEGACY_THEME_MAP.get(theme, theme)
+    return mapped if mapped in VALID_THEMES else "midnight"
 
 
 def _checkmark_icon_url() -> str:
     """Create a crisp 16x16 white checkmark PNG once and return its QSS url path."""
-    icon_path = Path(tempfile.gettempdir()) / "ytdownloader_check_white.png"
+    icon_path = Path(tempfile.gettempdir()) / "directsave_check_white.png"
     if not icon_path.is_file():
         pm = QPixmap(16, 16)
         pm.fill(Qt.transparent)
@@ -90,8 +176,9 @@ def _checkmark_icon_url() -> str:
 
 
 def build_stylesheet(theme: str) -> str:
-    """Return a complete Qt Style Sheet for 'dark' or 'light'."""
-    p = PALETTES[theme if theme in VALID_THEMES else "dark"]
+    """Return a complete Qt Style Sheet for the selected theme."""
+    chosen = normalize_theme(theme)
+    p = PALETTES[chosen]
     check_url = _checkmark_icon_url()
     return f"""
     QWidget {{
@@ -111,7 +198,7 @@ def build_stylesheet(theme: str) -> str:
     QFrame[card="true"] {{
         background-color: {p["surface"]};
         border: 1px solid {p["border"]};
-        border-radius: 12px;
+        border-radius: 14px;
     }}
     QFrame[card="true"] QLabel,
     QFrame[card="true"] QCheckBox {{
@@ -126,7 +213,7 @@ def build_stylesheet(theme: str) -> str:
 
     /* Typography */
     QLabel[heading="true"] {{
-        font-size: 15pt;
+        font-size: 15.5pt;
         font-weight: 700;
         background-color: transparent;
     }}
@@ -134,8 +221,8 @@ def build_stylesheet(theme: str) -> str:
         background-color: {p["surface_alt"]};
         color: {p["text_muted"]};
         border: 1px solid {p["border"]};
-        border-radius: 6px;
-        padding: 2px 8px;
+        border-radius: 8px;
+        padding: 2px 9px;
         font-size: 8.5pt;
         font-weight: 600;
     }}
@@ -158,13 +245,13 @@ def build_stylesheet(theme: str) -> str:
         background-color: {p["input_bg"]};
         color: {p["text"]};
         border: 1px solid {p["border"]};
-        border-radius: 8px;
-        padding: 7px 12px;
+        border-radius: 10px;
+        padding: 7px 13px;
         selection-background-color: {p["selection"]};
         selection-color: {p["text"]};
     }}
     QLineEdit:focus, QComboBox:focus, QListWidget:focus {{
-        border: 1px solid {p["border_focus"]};
+        border: 1.5px solid {p["border_focus"]};
     }}
     QLineEdit:disabled, QComboBox:disabled, QListWidget:disabled {{
         color: {p["text_muted"]};
@@ -177,24 +264,42 @@ def build_stylesheet(theme: str) -> str:
         background-color: {p["surface"]};
         color: {p["text"]};
         border: 1px solid {p["border"]};
+        border-radius: 10px;
         selection-background-color: {p["selection"]};
         selection-color: {p["text"]};
         outline: none;
         padding: 4px;
     }}
 
-    /* Segmented toggle (Video / Audio) */
+    /* Menus */
+    QMenu {{
+        background-color: {p["surface"]};
+        color: {p["text"]};
+        border: 1px solid {p["border"]};
+        border-radius: 10px;
+        padding: 6px;
+    }}
+    QMenu::item {{
+        padding: 7px 16px;
+        border-radius: 6px;
+    }}
+    QMenu::item:selected {{
+        background-color: {p["selection"]};
+        color: {p["text"]};
+    }}
+
+    /* Segmented pill switcher */
     QFrame[segmentContainer="true"] {{
         background-color: {p["segment_bg"]};
         border: 1px solid {p["border"]};
-        border-radius: 9px;
+        border-radius: 12px;
     }}
     QPushButton[segment="true"] {{
         background-color: transparent;
         color: {p["text_muted"]};
         border: none;
-        border-radius: 7px;
-        padding: 7px 14px;
+        border-radius: 9px;
+        padding: 7px 16px;
         font-weight: 600;
     }}
     QPushButton[segment="true"]:hover:!checked {{
@@ -202,8 +307,8 @@ def build_stylesheet(theme: str) -> str:
     }}
     QPushButton[segment="true"]:checked {{
         background-color: {p["segment_active"]};
-        color: {p["text"]};
-        border: 1px solid {p["border"]};
+        color: {p["segment_active_text"]};
+        border: none;
     }}
 
     /* Buttons */
@@ -211,7 +316,7 @@ def build_stylesheet(theme: str) -> str:
         background-color: {p["btn_bg"]};
         color: {p["text"]};
         border: 1px solid {p["btn_border"]};
-        border-radius: 8px;
+        border-radius: 10px;
         padding: 7px 14px;
         font-weight: 500;
     }}
@@ -226,8 +331,8 @@ def build_stylesheet(theme: str) -> str:
         background-color: transparent;
         color: {p["text_muted"]};
         border: 1px solid transparent;
-        border-radius: 8px;
-        padding: 6px 10px;
+        border-radius: 9px;
+        padding: 6px 11px;
         font-size: 9pt;
         font-weight: 500;
     }}
@@ -237,10 +342,25 @@ def build_stylesheet(theme: str) -> str:
         border: 1px solid {p["border"]};
     }}
 
+    QPushButton[role="pill"] {{
+        background-color: {p["surface_alt"]};
+        color: {p["text"]};
+        border: 1px solid {p["border"]};
+        border-radius: 999px;
+        padding: 5px 14px;
+        font-size: 9pt;
+        font-weight: 600;
+    }}
+    QPushButton[role="pill"]:hover {{
+        border-color: {p["border_focus"]};
+        background-color: {p["btn_hover"]};
+    }}
+
     QPushButton[role="primary"] {{
         background-color: {p["accent"]};
         color: #FFFFFF;
         border: none;
+        border-radius: 10px;
         font-weight: 600;
     }}
     QPushButton[role="primary"]:hover {{
@@ -258,8 +378,8 @@ def build_stylesheet(theme: str) -> str:
         background-color: {p["accent"]};
         color: #FFFFFF;
         border: none;
-        border-radius: 10px;
-        padding: 11px 20px;
+        border-radius: 12px;
+        padding: 12px 22px;
         font-size: 10.5pt;
         font-weight: 700;
     }}
@@ -278,6 +398,7 @@ def build_stylesheet(theme: str) -> str:
         background-color: transparent;
         color: {p["danger"]};
         border: 1px solid {p["danger"]};
+        border-radius: 10px;
         font-weight: 600;
         padding: 6px 14px;
     }}
@@ -299,18 +420,18 @@ def build_stylesheet(theme: str) -> str:
         text-align: center;
     }}
     QProgressBar::chunk {{
-        background-color: {p["accent"]};
+        background-color: {p["progress"]};
         border-radius: 4px;
     }}
 
-    /* Playlist checklist & crisp checkboxes in both Dark and Light mode */
+    /* Playlist checklist & crisp emerald checkboxes */
     QListWidget {{
         padding: 6px;
         outline: none;
     }}
     QListWidget::item {{
-        padding: 6px 8px;
-        border-radius: 6px;
+        padding: 7px 10px;
+        border-radius: 8px;
         color: {p["text"]};
     }}
     QListWidget::item:hover {{
@@ -323,16 +444,16 @@ def build_stylesheet(theme: str) -> str:
     QListWidget::indicator, QCheckBox::indicator {{
         width: 16px;
         height: 16px;
-        border-radius: 4px;
+        border-radius: 5px;
         border: 1.5px solid {p["check_border"]};
         background-color: {p["check_bg"]};
     }}
     QListWidget::indicator:hover, QCheckBox::indicator:hover {{
-        border-color: {p["accent"]};
+        border-color: {p["check_fill"]};
     }}
     QListWidget::indicator:checked, QCheckBox::indicator:checked {{
-        background-color: {p["accent"]};
-        border-color: {p["accent"]};
+        background-color: {p["check_fill"]};
+        border-color: {p["check_fill"]};
         image: url("{check_url}");
     }}
 
@@ -362,20 +483,18 @@ def detect_system_theme(app) -> str:
     color_scheme = getattr(Qt, "ColorScheme", None)
     if color_scheme is not None:
         try:
-            if app.styleHints().colorScheme() == color_scheme.Dark:
-                return "dark"
             if app.styleHints().colorScheme() == color_scheme.Light:
-                return "light"
+                return "lavender"
         except Exception:
             pass
-    return "dark"
+    return "midnight"
 
 
 def get_saved_theme(app) -> str:
     """Return the user's saved theme from settings.json, or the OS default."""
     saved = load_settings().get("theme")
-    if saved in VALID_THEMES:
-        return saved
+    if saved:
+        return normalize_theme(saved)
     return detect_system_theme(app)
 
 
@@ -400,10 +519,11 @@ def set_windows_titlebar_theme(window, dark: bool) -> None:
 
 
 def apply_theme(app, theme: str, window=None, save: bool = True) -> str:
-    """Apply 'dark' or 'light' theme to the app and optionally save it."""
-    chosen = theme if theme in VALID_THEMES else "dark"
+    """Apply one of the themes to the app and optionally save it."""
+    chosen = normalize_theme(theme)
     app.setStyleSheet(build_stylesheet(chosen))
-    set_windows_titlebar_theme(window, dark=(chosen == "dark"))
+    is_dark = THEME_META[chosen]["dark"]
+    set_windows_titlebar_theme(window, dark=is_dark)
     if save:
         remember_setting("theme", chosen)
     return chosen

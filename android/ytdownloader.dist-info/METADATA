@@ -1,10 +1,10 @@
 Metadata-Version: 2.1
 Briefcase-Version: 0.4.7
 Name: ytdownloader
-Formal-Name: YT Downloader
+Formal-Name: DirectSave
 App-ID: com.maverick.ytdownloader
-Version: 1.2.0
+Version: 1.3.0
 Home-page: https://github.com/Cptmaverick-22/yt-downloader
 Download-URL: https://github.com/Cptmaverick-22/yt-downloader
 Author: Cptmaverick-22
-Summary: Simple YouTube video and audio downloader
+Summary: Save what you love

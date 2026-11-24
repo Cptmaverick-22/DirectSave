@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 
 
+
 def _configure_runtime():
     """Prepare streams and bundled tool paths when running as a packaged app."""
 
@@ -122,8 +123,14 @@ from downloader import (
     summarize_video,
 )
 
+from themes import (
+    THEME_META,
+    THEME_STATUS_COLORS,
+    VALID_THEMES,
+    apply_theme,
+    get_saved_theme,
+)
 from logs import diagnostics_text, setup_logging
-from themes import THEME_STATUS_COLORS, apply_theme, get_saved_theme
 
 THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024
 CLOSE_WAIT_MS = 30000
@@ -661,19 +668,21 @@ class MainWindow(QWidget):
     # ----- theme ----------------------------------------------------------
 
     def apply_current_theme(self, save=True):
-        apply_theme(QApplication.instance(), self.current_theme, window=self, save=save)
-        if self.current_theme == "dark":
-            self.theme_btn.setText("☀ Light")
-            self.theme_btn.setToolTip("Switch to Light theme")
-        else:
-            self.theme_btn.setText("🌙 Dark")
-            self.theme_btn.setToolTip("Switch to Dark theme")
+        self.current_theme = apply_theme(
+            QApplication.instance(), self.current_theme, window=self, save=save
+        )
+        meta = THEME_META[self.current_theme]
+        self.theme_btn.setText(f"{meta['badge']} ▾")
+        self.theme_btn.setToolTip(f"Theme: {meta['name']} (click to switch)")
+
+        for key, action in self._theme_actions.items():
+            action.setChecked(key == self.current_theme)
 
         if self.status_label.text():
             self.show_status(self.status_label.text(), self._status_level)
 
-    def toggle_theme(self):
-        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+    def set_theme(self, theme_key):
+        self.current_theme = theme_key
         self.apply_current_theme(save=True)
 
     # ----- desktop notifications ------------------------------------------
@@ -788,9 +797,17 @@ class MainWindow(QWidget):
         self.update_button.clicked.connect(self.update_ytdlp)
 
         self.theme_btn = QPushButton()
-        self.theme_btn.setProperty("role", "ghost")
+        self.theme_btn.setProperty("role", "pill")
         self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.theme_btn.clicked.connect(self.toggle_theme)
+        theme_menu = QMenu(self)
+        self._theme_actions = {}
+        for key in VALID_THEMES:
+            act = QAction(THEME_META[key]["name"], self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _checked=False, k=key: self.set_theme(k))
+            theme_menu.addAction(act)
+            self._theme_actions[key] = act
+        self.theme_btn.setMenu(theme_menu)
 
         header_row.addWidget(heading)
         header_row.addWidget(version_badge)
@@ -843,12 +860,18 @@ class MainWindow(QWidget):
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(
-            "Paste a YouTube video or playlist link here…"
+            "Paste a video or playlist link here…"
         )
         self.url_input.setFixedHeight(40)
         self.url_input.setClearButtonEnabled(True)
         self.url_input.returnPressed.connect(self.fetch)
         self.url_input.textEdited.connect(self.on_url_edited)
+
+        self.paste_button = QPushButton("Paste")
+        self.paste_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.paste_button.setFixedHeight(40)
+        self.paste_button.setToolTip("Paste link from clipboard and fetch")
+        self.paste_button.clicked.connect(self.paste_from_clipboard)
 
         self.fetch_button = QPushButton("Fetch")
         self.fetch_button.setProperty("role", "primary")
@@ -858,6 +881,7 @@ class MainWindow(QWidget):
         self.fetch_button.clicked.connect(self.fetch)
 
         url_layout.addWidget(self.url_input, 1)
+        url_layout.addWidget(self.paste_button)
         url_layout.addWidget(self.fetch_button)
         layout.addWidget(url_card)
 
@@ -1157,6 +1181,7 @@ class MainWindow(QWidget):
         is_playlist = self.mode == "playlist"
 
         self.url_input.setEnabled(not busy)
+        self.paste_button.setEnabled(not busy)
         self.fetch_button.setEnabled(not busy)
         self.fetch_button.setText("Fetching…" if state == "fetching" else "Fetch")
         self.folder_button.setEnabled(not busy)
@@ -1224,7 +1249,7 @@ class MainWindow(QWidget):
     def show_status(self, text, level="info"):
         self._status_level = level
         palette = THEME_STATUS_COLORS.get(
-            self.current_theme, THEME_STATUS_COLORS["dark"]
+            self.current_theme, THEME_STATUS_COLORS["midnight"]
         )
         color = palette.get(level)
         self.status_label.setStyleSheet(
@@ -1505,6 +1530,19 @@ class MainWindow(QWidget):
             return "playlist"
 
         return None
+    
+    def paste_from_clipboard(self):
+        if self.state in ("fetching", "downloading"):
+            return
+
+        text = QApplication.clipboard().text().strip()
+        if not text:
+            self.show_status("Clipboard is empty.", "warning")
+            return
+
+        self.url_input.setText(text)
+        self.on_url_edited()
+        self.fetch()
 
     def fetch(self):
         if self.state in ("fetching", "downloading"):

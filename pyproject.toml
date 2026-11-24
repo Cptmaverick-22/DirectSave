@@ -8,9 +8,9 @@ license-files = ["LICENSE"]
 author = "Cptmaverick-22"
 
 [tool.briefcase.app.ytdownloader]
-formal_name = "YT Downloader"
-description = "Simple YouTube video and audio downloader"
-long_description = "Download YouTube videos and audio cleanly on Android and desktop."
+formal_name = "DirectSave"
+description = "Save what you love"
+long_description = "Save what you love — download videos and audio cleanly on Android and desktop."
 icon = "android/icons/icon"
 sources = [
     "android/ytdownloader",
