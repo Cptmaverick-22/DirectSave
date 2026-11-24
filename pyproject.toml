@@ -1,7 +1,7 @@
 [tool.briefcase]
 project_name = "yt-downloader"
 bundle = "com.maverick"
-version = "1.3.0"
+version = "1.4.0"
 url = "https://github.com/Cptmaverick-22/yt-downloader"
 license = "GPL-3.0+"
 license-files = ["LICENSE"]
