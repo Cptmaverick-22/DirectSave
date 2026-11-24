@@ -13,7 +13,7 @@ from pathlib import Path
 log = logging.getLogger("ytdl")
 
 APP_NAME = "YT Downloader"
-APP_VERSION = "1.2"   # The only place the version is set.
+APP_VERSION = "1.3"   # The only place the version is set.
 
 AUDIO_BITRATES = [128, 192, 256, 320]
 ORIGINAL_AUDIO = "original"     # YouTube's audio saved as it is, no conversion
