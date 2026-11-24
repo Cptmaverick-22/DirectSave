@@ -36,22 +36,15 @@ def _xdg_config_home():
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 
 
-def _config_dir():
-    """Per-user config folder for each operating system."""
-
-    if sys.platform == "win32":
-        base = Path(
-            os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming"
-        )
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = _xdg_config_home()
-
-    return base / "yt-downloader"
+def _default_config_dir() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        return Path(base) if base else Path.home() / "AppData" / "Roaming"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return Path(xdg) if xdg else Path.home() / ".config"
 
 
-CONFIG_DIR = _config_dir()
+CONFIG_DIR = _default_config_dir() / "directsave"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 
 def default_download_dir():

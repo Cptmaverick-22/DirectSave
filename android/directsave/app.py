@@ -48,7 +48,7 @@ from downloader import (
     summarize_video,
 )
 from logs import setup_logging
-from ytdownloader.storage import (
+from directsave.storage import (
     ANDROID_INTERNAL_ROOT,
     configure_mobile_paths,
     friendly_path,

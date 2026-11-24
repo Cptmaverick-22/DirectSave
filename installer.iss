@@ -1,23 +1,20 @@
 ; Inno Setup script for YT Downloader
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1"
+  #define MyAppVersion "1.4"
 #endif
 
 #define MyAppName "DirectSave"
-#define MyAppExeName "YTDownloader.exe"
+#define MyAppExeName "DirectSave.exe"
 
 [Setup]
-LicenseFile=LICENSE
-; Fixed GUID so future installer versions upgrade in place cleanly.
-AppId={{8F3B4A1E-9C2D-4E7A-B5D1-6A2F8C1E3B4D}
+AppId={{9A4E2C10-7B3D-4F81-A6C2-5E190D4B8F23}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
-DefaultDirName={autopf}\YTDownloader
+DefaultDirName={autopf}\DirectSave
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-; Per-user install (no admin password / UAC prompt required).
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

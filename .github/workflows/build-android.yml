@@ -50,7 +50,7 @@ jobs:
           from pathlib import Path
           from PIL import Image
 
-          src = Path("android/ytdownloader/resources/icon.png")
+          src = Path("android/directsave/resources/icon.png")
           out_dir = Path("android/icons")
           out_dir.mkdir(parents=True, exist_ok=True)
           if not src.is_file():

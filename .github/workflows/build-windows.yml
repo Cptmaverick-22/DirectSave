@@ -64,17 +64,17 @@ jobs:
           }
 
       - name: Build Windows app with PyInstaller
-        run: pyinstaller --clean --noconfirm ytdownloader.spec
+        run: pyinstaller --clean --noconfirm directsave.spec
 
       - name: Verify PyInstaller output
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (-not (Test-Path "dist\YTDownloader\YTDownloader.exe")) {
-            throw "YTDownloader.exe was not created."
+          if (-not (Test-Path "dist\DirectSave\DirectSave.exe")) {
+            throw "DirectSave.exe was not created."
           }
           foreach ($tool in @("ffmpeg.exe", "ffprobe.exe", "deno.exe")) {
-            if (-not (Test-Path "dist\YTDownloader\_internal\$tool")) {
+            if (-not (Test-Path "dist\DirectSave\_internal\$tool")) {
               throw "Bundled binary missing from _internal: $tool"
             }
           }
@@ -92,7 +92,7 @@ jobs:
             $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           }
 
-          & $iscc "/DMyAppVersion=${{ steps.meta.outputs.version }}" installer.iss
+          & $iscc "/DMyAppVersion=${{ steps.meta.outputs.version }}" "/DMyAppExeName=DirectSave.exe" installer.iss
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
