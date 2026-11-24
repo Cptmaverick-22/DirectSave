@@ -55,13 +55,31 @@ jobs:
           src = Path("android/ytdownloader/resources/icon.png")
           out_dir = Path("android/icons")
           out_dir.mkdir(parents=True, exist_ok=True)
-          if src.is_file():
-              img = Image.open(src).convert("RGBA")
-              for size in (48, 72, 96, 144, 192):
-                  resized = img.resize((size, size), Image.Resampling.LANCZOS)
-                  resized.save(out_dir / f"icon-round-{size}.png")
-                  resized.save(out_dir / f"icon-square-{size}.png")
-                  resized.save(out_dir / f"icon-{size}.png")
+          if not src.is_file():
+              raise FileNotFoundError(f"Missing icon source: {src}")
+
+          img = Image.open(src).convert("RGBA")
+
+          # Legacy round & square launcher icons
+          for size in (48, 72, 96, 144, 192):
+              resized = img.resize((size, size), Image.Resampling.LANCZOS)
+              resized.save(out_dir / f"icon-round-{size}.png")
+              resized.save(out_dir / f"icon-square-{size}.png")
+              resized.save(out_dir / f"icon-{size}.png")
+
+          # Android splash screen sizes
+          for size in (320, 480, 640, 960, 1280):
+              resized = img.resize((size, size), Image.Resampling.LANCZOS)
+              resized.save(out_dir / f"icon-square-{size}.png")
+
+          # Android 8+ adaptive icons (logo centered in 66/108 safe zone)
+          for size in (108, 162, 216, 324, 432):
+              canvas = Image.new("RGBA", (size, size), (11, 11, 14, 255))
+              inner = int(round(size * (66 / 108)))
+              fg = img.resize((inner, inner), Image.Resampling.LANCZOS)
+              offset = (size - inner) // 2
+              canvas.paste(fg, (offset, offset), fg)
+              canvas.save(out_dir / f"icon-adaptive-{size}.png")
           '
 
       - name: Create Android project
