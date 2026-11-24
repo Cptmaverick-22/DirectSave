@@ -1,8 +1,11 @@
 """Dark and Light themes for YT Downloader (PySide6 / Fusion)."""
 
+from pathlib import Path
 import sys
+import tempfile
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 
 from config import load_settings, remember_setting
 
@@ -32,6 +35,8 @@ PALETTES = {
         "segment_bg": "#12141B",
         "segment_active": "#272C3B",
         "scroll_handle": "#343A4D",
+        "check_bg": "#12141B",
+        "check_border": "#4B5563",
     },
     "light": {
         "bg": "#F3F5F9",
@@ -56,6 +61,8 @@ PALETTES = {
         "segment_bg": "#EBEEF4",
         "segment_active": "#FFFFFF",
         "scroll_handle": "#CBD5E1",
+        "check_bg": "#FFFFFF",
+        "check_border": "#9CA3AF",
     },
 }
 
@@ -65,15 +72,39 @@ THEME_STATUS_COLORS = {
 }
 
 
+def _checkmark_icon_url() -> str:
+    """Create a crisp 16x16 white checkmark PNG once and return its QSS url path."""
+    icon_path = Path(tempfile.gettempdir()) / "ytdownloader_check_white.png"
+    if not icon_path.is_file():
+        pm = QPixmap(16, 16)
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor("#FFFFFF"), 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(3.5, 8.2), QPointF(6.6, 11.4))
+        painter.drawLine(QPointF(6.6, 11.4), QPointF(12.6, 4.6))
+        painter.end()
+        pm.save(str(icon_path), "PNG")
+    return icon_path.as_posix()
+
+
 def build_stylesheet(theme: str) -> str:
     """Return a complete Qt Style Sheet for 'dark' or 'light'."""
     p = PALETTES[theme if theme in VALID_THEMES else "dark"]
+    check_url = _checkmark_icon_url()
     return f"""
     QWidget {{
         background-color: {p["bg"]};
         color: {p["text"]};
         font-family: "Segoe UI", "Inter", "Cantarell", sans-serif;
         font-size: 10pt;
+    }}
+
+    /* Scroll area */
+    QScrollArea, QScrollArea > QWidget > QWidget {{
+        background-color: {p["bg"]};
+        border: none;
     }}
 
     /* Cards */
@@ -130,6 +161,7 @@ def build_stylesheet(theme: str) -> str:
         border-radius: 8px;
         padding: 7px 12px;
         selection-background-color: {p["selection"]};
+        selection-color: {p["text"]};
     }}
     QLineEdit:focus, QComboBox:focus, QListWidget:focus {{
         border: 1px solid {p["border_focus"]};
@@ -146,6 +178,7 @@ def build_stylesheet(theme: str) -> str:
         color: {p["text"]};
         border: 1px solid {p["border"]};
         selection-background-color: {p["selection"]};
+        selection-color: {p["text"]};
         outline: none;
         padding: 4px;
     }}
@@ -270,16 +303,37 @@ def build_stylesheet(theme: str) -> str:
         border-radius: 4px;
     }}
 
-    /* Playlist checklist */
+    /* Playlist checklist & crisp checkboxes in both Dark and Light mode */
     QListWidget {{
-        padding: 4px;
+        padding: 6px;
+        outline: none;
     }}
     QListWidget::item {{
         padding: 6px 8px;
         border-radius: 6px;
+        color: {p["text"]};
+    }}
+    QListWidget::item:hover {{
+        background-color: {p["surface_alt"]};
     }}
     QListWidget::item:selected {{
         background-color: {p["selection"]};
+        color: {p["text"]};
+    }}
+    QListWidget::indicator, QCheckBox::indicator {{
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        border: 1.5px solid {p["check_border"]};
+        background-color: {p["check_bg"]};
+    }}
+    QListWidget::indicator:hover, QCheckBox::indicator:hover {{
+        border-color: {p["accent"]};
+    }}
+    QListWidget::indicator:checked, QCheckBox::indicator:checked {{
+        background-color: {p["accent"]};
+        border-color: {p["accent"]};
+        image: url("{check_url}");
     }}
 
     /* Scrollbars */
@@ -335,7 +389,6 @@ def set_windows_titlebar_theme(window, dark: bool) -> None:
         hwnd = int(window.winId())
         value = ctypes.c_int(1 if dark else 0)
         dwmapi = ctypes.windll.dwmapi
-        # Attribute 20 = Windows 10 20H1+ & Windows 11; 19 = older Windows 10.
         for attr in (20, 19):
             res = dwmapi.DwmSetWindowAttribute(
                 hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)

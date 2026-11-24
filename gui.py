@@ -1,7 +1,10 @@
 """YT Downloader - graphical interface (Qt)."""
 
+from datetime import datetime
+import json
 import logging
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -71,6 +74,8 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -87,8 +92,10 @@ from config import (
     APP_NAME,
     APP_VERSION,
     AUDIO_CHOICES,
-    audio_label,
+    CONFIG_DIR,
+    ORIGINAL_AUDIO,
     PLAYLIST_QUALITIES,
+    audio_label,
     get_download_dir,
     load_settings,
     remember_setting,
@@ -121,6 +128,8 @@ from themes import THEME_STATUS_COLORS, apply_theme, get_saved_theme
 THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024
 CLOSE_WAIT_MS = 30000
 LABEL_COL_WIDTH = 88
+HISTORY_FILE = CONFIG_DIR / "history.json"
+MAX_HISTORY_ITEMS = 150
 
 
 # --------------------------------------------------------------------------
@@ -302,6 +311,51 @@ def fetch_everything(url, prefer_playlist=False):
     return ("playlist", playlist, playlist_thumbnail(playlist))
 
 
+def _find_downloaded_file(folder, video_id, preferred_name=None):
+    """Locate the finished media file in folder using filename or [video_id]."""
+    if folder is None:
+        return None
+
+    folder_path = Path(folder)
+    if not folder_path.is_dir():
+        return None
+
+    if preferred_name:
+        candidate = folder_path / preferred_name
+        if candidate.is_file():
+            return candidate
+
+    if not video_id:
+        return None
+
+    marker = f"[{video_id}]"
+    matches = []
+    try:
+        for entry in folder_path.iterdir():
+            if not entry.is_file():
+                continue
+            name = entry.name
+            if marker in name and not name.endswith((".part", ".ytdl", ".tmp")):
+                matches.append(entry)
+    except OSError:
+        return None
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0]
+
+
+def _quality_badge(kind, setting):
+    """Readable quality/bitrate badge text for a history entry."""
+    if kind == "audio":
+        if setting == ORIGINAL_AUDIO:
+            return "Original Audio"
+        return f"{setting} kbps MP3"
+    return f"{setting}p MP4"
+
+
 # --------------------------------------------------------------------------
 # Small UI helpers
 # --------------------------------------------------------------------------
@@ -362,10 +416,13 @@ class MainWindow(QWidget):
         super().__init__()
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setMinimumWidth(680)
+        self.setMinimumSize(680, 520)
 
         self.current_theme = get_saved_theme(QApplication.instance())
         self._status_level = "info"
+
+        self.active_tab = "downloader"  # "downloader" or "history"
+        self.history_items = self._load_history()
 
         self.state = "idle"  # idle, fetching, ready, downloading, done
         self.mode = "video"  # "video" or "playlist"
@@ -376,6 +433,7 @@ class MainWindow(QWidget):
         self.summary = None
         self.video_options = []
         self.playlist = None
+        self._pending_playlist_entries = []
         self.failed_items = []
         self.last_folder = None
         self.download_kind = "video"
@@ -386,6 +444,7 @@ class MainWindow(QWidget):
         self.build_ui()
         self.setup_tray()
         self.set_state("idle")
+        self._update_history_tab_label()
         self.url_input.setFocus()
 
         self.update_notice = UpdateNotice(self)
@@ -398,6 +457,206 @@ class MainWindow(QWidget):
                 "it is installed.",
                 "warning",
             )
+
+    # ----- history persistence --------------------------------------------
+
+    @staticmethod
+    def _load_history():
+        try:
+            if HISTORY_FILE.is_file():
+                data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return data[:MAX_HISTORY_ITEMS]
+        except (OSError, ValueError):
+            pass
+        return []
+
+    def _save_history(self):
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = HISTORY_FILE.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(self.history_items[:MAX_HISTORY_ITEMS], indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(HISTORY_FILE)
+        except OSError:
+            pass
+
+    def _record_history(self, title, kind, quality_str, file_path):
+        path_str = str(file_path)
+        entry = {
+            "id": str(int(time.time() * 1000)),
+            "title": title,
+            "kind": kind,
+            "quality": quality_str,
+            "path": path_str,
+            "timestamp": datetime.now().strftime("%b %d, %I:%M %p"),
+        }
+        self.history_items = [
+            item for item in self.history_items if item.get("path") != path_str
+        ]
+        self.history_items.insert(0, entry)
+        self.history_items = self.history_items[:MAX_HISTORY_ITEMS]
+        self._save_history()
+        self._update_history_tab_label()
+        if self.active_tab == "history":
+            self._render_history_list()
+
+    def _update_history_tab_label(self):
+        count = len(self.history_items)
+        self.nav_history_btn.setText(f"History ({count})" if count else "History")
+
+    def _switch_tab(self, tab_name):
+        if self.active_tab == tab_name:
+            return
+        self.active_tab = tab_name
+        is_dl = tab_name == "downloader"
+        self.downloader_page.setVisible(is_dl)
+        self.history_page.setVisible(not is_dl)
+        if not is_dl:
+            self._render_history_list()
+        self.scroll_area.verticalScrollBar().setValue(0)
+        self.fit_window()
+
+    def _render_history_list(self):
+        while self.history_list_layout.count():
+            child = self.history_list_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        query = self.history_search_input.text().strip().lower()
+        items = [
+            item
+            for item in self.history_items
+            if not query or query in (item.get("title") or "").lower()
+        ]
+
+        self.clear_history_btn.setEnabled(bool(self.history_items))
+
+        if not items:
+            empty_card = QFrame()
+            empty_card.setProperty("card", True)
+            empty_layout = QVBoxLayout(empty_card)
+            empty_layout.setContentsMargins(20, 24, 20, 24)
+            msg = (
+                "No matching downloads found."
+                if query
+                else "No downloads yet. Completed videos and audio will appear here."
+            )
+            empty_lbl = plain_label(msg, muted=True)
+            empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_layout.addWidget(empty_lbl)
+            self.history_list_layout.addWidget(empty_card)
+            return
+
+        for item in items:
+            kind = item.get("kind", "video")
+            quality = item.get("quality", "")
+            ts = item.get("timestamp", "")
+            path_str = item.get("path", "")
+            title = item.get("title", "Untitled")
+
+            card = QFrame()
+            card.setProperty("card", True)
+            row = QHBoxLayout(card)
+            row.setContentsMargins(16, 14, 16, 14)
+            row.setSpacing(14)
+
+            info_col = QVBoxLayout()
+            info_col.setSpacing(4)
+
+            prefix = "AUDIO" if kind == "audio" else "VIDEO"
+            badge_lbl = plain_label(f"{prefix}  ·  {quality}  ·  {ts}", muted=True)
+            title_lbl = plain_label(title, bold=True)
+            path_lbl = plain_label(Path(path_str).name if path_str else "", muted=True)
+
+            info_col.addWidget(badge_lbl)
+            info_col.addWidget(title_lbl)
+            info_col.addWidget(path_lbl)
+            row.addLayout(info_col, 1)
+
+            play_text = "▶ Play Audio" if kind == "audio" else "▶ Play Video"
+            play_btn = QPushButton(play_text)
+            play_btn.setProperty("role", "primary")
+            play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            play_btn.setFixedHeight(36)
+            play_btn.clicked.connect(
+                lambda _checked=False, p=path_str: self._play_history_item(p)
+            )
+
+            folder_btn = QPushButton("Folder")
+            folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            folder_btn.setFixedHeight(36)
+            folder_btn.clicked.connect(
+                lambda _checked=False, p=path_str: self._open_history_folder(p)
+            )
+
+            remove_btn = QPushButton("Remove")
+            remove_btn.setProperty("role", "ghost")
+            remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            remove_btn.setFixedHeight(36)
+            remove_btn.clicked.connect(
+                lambda _checked=False, p=path_str: self._remove_history_item(p)
+            )
+
+            row.addWidget(play_btn)
+            row.addWidget(folder_btn)
+            row.addWidget(remove_btn)
+            self.history_list_layout.addWidget(card)
+
+    def _play_history_item(self, path_str):
+        file_path = Path(path_str)
+        if not file_path.is_file():
+            QMessageBox.warning(
+                self,
+                "File Not Found",
+                "This file could not be found on disk.\n"
+                "It may have been moved, renamed, or deleted.",
+            )
+            return
+
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(file_path))):
+            QMessageBox.warning(
+                self,
+                "Playback Failed",
+                f"Could not open the default media player for:\n{file_path.name}",
+            )
+
+    def _open_history_folder(self, path_str):
+        folder = Path(path_str).parent
+        if folder.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        else:
+            QMessageBox.warning(
+                self,
+                "Folder Not Found",
+                "The download folder for this item no longer exists.",
+            )
+
+    def _remove_history_item(self, path_str):
+        self.history_items = [
+            item for item in self.history_items if item.get("path") != path_str
+        ]
+        self._save_history()
+        self._update_history_tab_label()
+        self._render_history_list()
+
+    def _clear_history(self):
+        if not self.history_items:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Clear History",
+            "Clear all items from Download History?\n\n"
+            "(Your downloaded video and audio files will not be deleted.)",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.history_items = []
+            self._save_history()
+            self._update_history_tab_label()
+            self._render_history_list()
 
     # ----- theme ----------------------------------------------------------
 
@@ -487,9 +746,28 @@ class MainWindow(QWidget):
     # ----- layout ---------------------------------------------------------
 
     def build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(14)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        outer_layout.addWidget(self.scroll_area)
+
+        self._content_widget = QWidget()
+        self._content_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self.scroll_area.setWidget(self._content_widget)
+
+        root_layout = QVBoxLayout(self._content_widget)
+        root_layout.setContentsMargins(24, 20, 24, 24)
+        root_layout.setSpacing(14)
+        self._content_layout = root_layout
 
         # 1. Top header bar (brand left, utility actions right)
         header_row = QHBoxLayout()
@@ -505,7 +783,7 @@ class MainWindow(QWidget):
         self.update_button.setProperty("role", "ghost")
         self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_button.setToolTip(
-            "Download the newest yt-dlp. This fixes most sudden " "download failures."
+            "Download the newest yt-dlp. This fixes most sudden download failures."
         )
         self.update_button.clicked.connect(self.update_ytdlp)
 
@@ -519,9 +797,44 @@ class MainWindow(QWidget):
         header_row.addStretch(1)
         header_row.addWidget(self.update_button)
         header_row.addWidget(self.theme_btn)
-        layout.addLayout(header_row)
+        root_layout.addLayout(header_row)
 
-        # 2. URL input card
+        # 2. Top navigation tabs (Downloader | History)
+        nav_frame = QFrame()
+        nav_frame.setProperty("segmentContainer", True)
+        nav_layout = QHBoxLayout(nav_frame)
+        nav_layout.setContentsMargins(4, 4, 4, 4)
+        nav_layout.setSpacing(4)
+
+        self.nav_downloader_btn = QPushButton("Downloader")
+        self.nav_downloader_btn.setCheckable(True)
+        self.nav_downloader_btn.setChecked(True)
+        self.nav_downloader_btn.setProperty("segment", True)
+        self.nav_downloader_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav_downloader_btn.clicked.connect(lambda: self._switch_tab("downloader"))
+
+        self.nav_history_btn = QPushButton("History")
+        self.nav_history_btn.setCheckable(True)
+        self.nav_history_btn.setProperty("segment", True)
+        self.nav_history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav_history_btn.clicked.connect(lambda: self._switch_tab("history"))
+
+        nav_group = QButtonGroup(self)
+        nav_group.setExclusive(True)
+        nav_group.addButton(self.nav_downloader_btn)
+        nav_group.addButton(self.nav_history_btn)
+
+        nav_layout.addWidget(self.nav_downloader_btn, 1)
+        nav_layout.addWidget(self.nav_history_btn, 1)
+        root_layout.addWidget(nav_frame)
+
+        # ── Downloader Page ──────────────────────────────────────────────
+        self.downloader_page = QWidget()
+        layout = QVBoxLayout(self.downloader_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        # 3. URL input card
         url_card = QFrame()
         url_card.setProperty("card", True)
         url_layout = QHBoxLayout(url_card)
@@ -548,7 +861,7 @@ class MainWindow(QWidget):
         url_layout.addWidget(self.fetch_button)
         layout.addWidget(url_card)
 
-        # 3. Video / playlist preview card
+        # 4. Video / playlist preview card
         self.card = QFrame()
         self.card.setProperty("card", True)
         card_layout = QHBoxLayout(self.card)
@@ -572,9 +885,12 @@ class MainWindow(QWidget):
         card_layout.addLayout(text_column, 1)
         layout.addWidget(self.card)
 
-        # 4. Format, quality, and playlist options card
+        # 5. Format, quality, and playlist options card
         self.options = QFrame()
         self.options.setProperty("card", True)
+        self.options.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         options_layout = QVBoxLayout(self.options)
         options_layout.setContentsMargins(16, 16, 16, 16)
         options_layout.setSpacing(12)
@@ -620,6 +936,9 @@ class MainWindow(QWidget):
         # Playlist-only options
         self.playlist_options = QWidget()
         self.playlist_options.setStyleSheet("background-color: transparent;")
+        self.playlist_options.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         playlist_layout = QVBoxLayout(self.playlist_options)
         playlist_layout.setContentsMargins(0, 4, 0, 0)
         playlist_layout.setSpacing(10)
@@ -676,7 +995,10 @@ class MainWindow(QWidget):
         playlist_layout.addWidget(self.selection_count_label)
 
         self.playlist_list = QListWidget()
-        self.playlist_list.setFixedHeight(170)
+        self.playlist_list.setFixedHeight(220)
+        self.playlist_list.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.playlist_list.itemChanged.connect(self.on_checklist_item_changed)
         playlist_layout.addWidget(self.playlist_list)
 
@@ -692,7 +1014,7 @@ class MainWindow(QWidget):
         options_layout.addWidget(self.playlist_options)
         layout.addWidget(self.options)
 
-        # 5. Save location card (always visible)
+        # 6. Save location card (always visible)
         folder_card = QFrame()
         folder_card.setProperty("card", True)
         folder_row = QHBoxLayout(folder_card)
@@ -711,7 +1033,7 @@ class MainWindow(QWidget):
         folder_row.addWidget(self.folder_button)
         layout.addWidget(folder_card)
 
-        # 6. Full-width primary Download CTA
+        # 7. Full-width primary Download CTA
         self.download_button = QPushButton("Download")
         self.download_button.setProperty("role", "cta")
         self.download_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -719,7 +1041,7 @@ class MainWindow(QWidget):
         self.download_button.clicked.connect(self.start_download)
         layout.addWidget(self.download_button)
 
-        # 7. Progress card (visible while fetching or downloading)
+        # 8. Progress card (visible while fetching or downloading)
         self.progress_box = QFrame()
         self.progress_box.setProperty("card", True)
         progress_layout = QVBoxLayout(self.progress_box)
@@ -748,7 +1070,7 @@ class MainWindow(QWidget):
         progress_layout.addWidget(self.progress_label)
         layout.addWidget(self.progress_box)
 
-        # 8. Contextual status & result bar (right-aligned action buttons)
+        # 9. Contextual status & result bar (right-aligned action buttons)
         self.status_box = QFrame()
         self.status_box.setProperty("card", True)
         status_row = QHBoxLayout(self.status_box)
@@ -779,7 +1101,41 @@ class MainWindow(QWidget):
         status_row.addWidget(self.diagnostics_button)
         layout.addWidget(self.status_box)
 
-        layout.addStretch(1)
+        root_layout.addWidget(self.downloader_page)
+
+        # ── History Page ─────────────────────────────────────────────────
+        self.history_page = QWidget()
+        history_layout = QVBoxLayout(self.history_page)
+        history_layout.setContentsMargins(0, 0, 0, 0)
+        history_layout.setSpacing(12)
+
+        history_toolbar = QHBoxLayout()
+        history_toolbar.setSpacing(10)
+
+        self.history_search_input = QLineEdit()
+        self.history_search_input.setFixedHeight(38)
+        self.history_search_input.setPlaceholderText("Filter history by title…")
+        self.history_search_input.setClearButtonEnabled(True)
+        self.history_search_input.textChanged.connect(self._render_history_list)
+
+        self.clear_history_btn = QPushButton("Clear All")
+        self.clear_history_btn.setProperty("role", "danger")
+        self.clear_history_btn.setFixedHeight(38)
+        self.clear_history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_history_btn.clicked.connect(self._clear_history)
+
+        history_toolbar.addWidget(self.history_search_input, 1)
+        history_toolbar.addWidget(self.clear_history_btn)
+        history_layout.addLayout(history_toolbar)
+
+        self.history_list_layout = QVBoxLayout()
+        self.history_list_layout.setSpacing(10)
+        history_layout.addLayout(self.history_list_layout)
+
+        self.history_page.setVisible(False)
+        root_layout.addWidget(self.history_page)
+
+        root_layout.addStretch(1)
 
     # ----- state ----------------------------------------------------------
 
@@ -838,13 +1194,21 @@ class MainWindow(QWidget):
         self.fit_window(shrink=(state == "idle"))
 
     def fit_window(self, shrink=False):
-        """Grow the window when content needs room; shrink only on request."""
+        """Grow the window up to screen height when needed; never fight maximize."""
+        if self.isMaximized() or self.isFullScreen():
+            return
 
-        self.layout().activate()
-        needed = self.sizeHint().height()
+        self._content_layout.activate()
+        needed = self._content_widget.sizeHint().height() + 12
 
-        if shrink or self.height() < needed:
-            self.resize(self.width(), needed)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            max_height = max(560, screen.availableGeometry().height() - 80)
+            needed = min(needed, max_height)
+
+        target_height = max(self.minimumHeight(), needed)
+        if shrink or self.height() < target_height:
+            self.resize(self.width(), target_height)
 
     def update_download_button(self):
         if self.mode == "playlist" and self.playlist is not None:
@@ -1272,7 +1636,7 @@ class MainWindow(QWidget):
 
         if setting is None:
             self.show_status(
-                "No supported MP4 resolutions for this video. " "Try the Audio option.",
+                "No supported MP4 resolutions for this video. Try the Audio option.",
                 "warning",
             )
             return
@@ -1299,6 +1663,7 @@ class MainWindow(QWidget):
                 self.show_status("Select at least one video to download.", "error")
                 return
 
+            self._pending_playlist_entries = list(selected)
             folder_name = self.subfolder_input.text().strip() or self.playlist.title
 
             def job(thread):
@@ -1314,6 +1679,7 @@ class MainWindow(QWidget):
             done_handler = self.on_playlist_done
 
         else:
+            self._pending_playlist_entries = []
             function = download_video if kind == "video" else download_audio
             url, info = self.url, self.info
 
@@ -1407,8 +1773,19 @@ class MainWindow(QWidget):
         self.last_folder = result.folder
 
         if result.status == "completed":
-            self.show_status("✔ Download complete", "success")
-            self.send_notification("Download complete", self.summary.title)
+            title = self.summary.title if self.summary else "Downloaded media"
+            vid = (self.info or {}).get("id")
+            saved_file = _find_downloaded_file(result.folder, vid, result.filename)
+            if saved_file is not None:
+                self._record_history(
+                    title,
+                    self.download_kind,
+                    _quality_badge(self.download_kind, self.download_setting),
+                    saved_file,
+                )
+
+            self.show_status("✔ Download complete · Saved to History", "success")
+            self.send_notification("Download complete", title)
             self.remember_choice()
 
         elif result.status == "exists":
@@ -1422,6 +1799,20 @@ class MainWindow(QWidget):
     def on_playlist_done(self, result):
         self.last_folder = result.folder
         self.failed_items = result.failed
+
+        if result.folder is not None and self._pending_playlist_entries:
+            failed_titles = {title for title, _ in result.failed}
+            quality_str = _quality_badge(self.download_kind, self.download_setting)
+            for entry in self._pending_playlist_entries:
+                entry_title = entry.get("title") or entry.get("id") or "Untitled"
+                if entry_title in failed_titles:
+                    continue
+                saved_file = _find_downloaded_file(result.folder, entry.get("id"))
+                if saved_file is not None:
+                    self._record_history(
+                        entry_title, self.download_kind, quality_str, saved_file
+                    )
+        self._pending_playlist_entries = []
 
         summary_text = (
             f"{result.completed} completed, "
@@ -1453,6 +1844,7 @@ class MainWindow(QWidget):
         self.set_state("done")
 
     def on_download_failed(self, message):
+        self._pending_playlist_entries = []
         self.show_status(message, "error")
         self.set_state("ready")
 
@@ -1611,7 +2003,7 @@ class MainWindow(QWidget):
         answer = QMessageBox.question(
             self,
             "Update yt-dlp",
-            f"yt-dlp {version} is installed.\n\n" "Restart the app now to use it?",
+            f"yt-dlp {version} is installed.\n\nRestart the app now to use it?",
         )
 
         if answer == QMessageBox.StandardButton.Yes:
